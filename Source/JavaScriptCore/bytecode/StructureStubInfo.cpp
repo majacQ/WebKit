@@ -52,6 +52,7 @@ StructureStubInfo::StructureStubInfo(AccessType accessType, CodeOrigin codeOrigi
     , propertyIsInt32(false)
     , propertyIsSymbol(false)
 {
+    regs.thisGPR = InvalidGPRReg;
 }
 
 StructureStubInfo::~StructureStubInfo()
@@ -139,7 +140,7 @@ void StructureStubInfo::aboutToDie()
 }
 
 AccessGenerationResult StructureStubInfo::addAccessCase(
-    const GCSafeConcurrentJSLocker& locker, JSGlobalObject* globalObject, CodeBlock* codeBlock, ECMAMode ecmaMode, CacheableIdentifier ident, std::unique_ptr<AccessCase> accessCase)
+    const GCSafeConcurrentJSLocker& locker, JSGlobalObject* globalObject, CodeBlock* codeBlock, ECMAMode ecmaMode, CacheableIdentifier ident, RefPtr<AccessCase> accessCase)
 {
     checkConsistency();
 
@@ -155,7 +156,7 @@ AccessGenerationResult StructureStubInfo::addAccessCase(
         AccessGenerationResult result;
         
         if (m_cacheType == CacheType::Stub) {
-            result = u.stub->addCase(locker, vm, codeBlock, *this, WTFMove(accessCase));
+            result = u.stub->addCase(locker, vm, codeBlock, *this, accessCase.releaseNonNull());
             
             if (StructureStubInfoInternal::verbose)
                 dataLog("Had stub, result: ", result, "\n");
@@ -170,9 +171,9 @@ AccessGenerationResult StructureStubInfo::addAccessCase(
         } else {
             std::unique_ptr<PolymorphicAccess> access = makeUnique<PolymorphicAccess>();
             
-            Vector<std::unique_ptr<AccessCase>, 2> accessCases;
+            Vector<RefPtr<AccessCase>, 2> accessCases;
             
-            std::unique_ptr<AccessCase> previousCase = AccessCase::fromStructureStubInfo(vm, codeBlock, ident, *this);
+            auto previousCase = AccessCase::fromStructureStubInfo(vm, codeBlock, ident, *this);
             if (previousCase)
                 accessCases.append(WTFMove(previousCase));
             
@@ -252,19 +253,19 @@ void StructureStubInfo::reset(const ConcurrentJSLockerBase& locker, CodeBlock* c
 
     switch (accessType) {
     case AccessType::TryGetById:
-        resetGetBy(codeBlock, *this, GetByKind::Try);
+        resetGetBy(codeBlock, *this, GetByKind::TryById);
         break;
     case AccessType::GetById:
-        resetGetBy(codeBlock, *this, GetByKind::Normal);
+        resetGetBy(codeBlock, *this, GetByKind::ById);
         break;
     case AccessType::GetByIdWithThis:
-        resetGetBy(codeBlock, *this, GetByKind::WithThis);
+        resetGetBy(codeBlock, *this, GetByKind::ByIdWithThis);
         break;
     case AccessType::GetByIdDirect:
-        resetGetBy(codeBlock, *this, GetByKind::Direct);
+        resetGetBy(codeBlock, *this, GetByKind::ByIdDirect);
         break;
     case AccessType::GetByVal:
-        resetGetBy(codeBlock, *this, GetByKind::NormalByVal);
+        resetGetBy(codeBlock, *this, GetByKind::ByVal);
         break;
     case AccessType::GetPrivateName:
         resetGetBy(codeBlock, *this, GetByKind::PrivateName);
@@ -273,19 +274,19 @@ void StructureStubInfo::reset(const ConcurrentJSLockerBase& locker, CodeBlock* c
         resetPutByID(codeBlock, *this);
         break;
     case AccessType::InById:
-        resetInBy(codeBlock, *this, InByKind::Normal);
+        resetInBy(codeBlock, *this, InByKind::ById);
         break;
     case AccessType::InByVal:
-        resetInBy(codeBlock, *this, InByKind::NormalByVal);
+        resetInBy(codeBlock, *this, InByKind::ByVal);
         break;
     case AccessType::InstanceOf:
-        resetInstanceOf(*this);
+        resetInstanceOf(codeBlock, *this);
         break;
     case AccessType::DeleteByID:
-        resetDelBy(codeBlock, *this, DelByKind::Normal);
+        resetDelBy(codeBlock, *this, DelByKind::ById);
         break;
     case AccessType::DeleteByVal:
-        resetDelBy(codeBlock, *this, DelByKind::NormalByVal);
+        resetDelBy(codeBlock, *this, DelByKind::ByVal);
         break;
     case AccessType::CheckPrivateBrand:
         resetCheckPrivateBrand(codeBlock, *this);

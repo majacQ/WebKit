@@ -1,3 +1,131 @@
+2021-06-20  Wenson Hsieh  <wenson_hsieh@apple.com>
+
+        [macOS] Rename WKVisualSearchPreviewController to WKQuickLookPreviewController
+        https://bugs.webkit.org/show_bug.cgi?id=227193
+
+        Reviewed by Sam Weinig.
+
+        Fix up some compiler flags in this SPI header. Instead of using `HAVE(VK_IMAGE_ANALYSIS)` to guard SPI
+        declarations, use the new `HAVE(QUICKLOOK_PREVIEW_ITEM_DATA_PROVIDER)`, `HAVE(QUICKLOOK_ITEM_PREVIEW_OPTIONS)`
+        and `HAVE(QUICKLOOK_PREVIEW_ACTIVITY)` flags.
+
+        * pal/spi/mac/QuickLookMacSPI.h:
+
+2021-06-17  Said Abou-Hallawa  <said@apple.com>
+
+        [Cocoa] Disable hardware decoding in the WebProcess
+        https://bugs.webkit.org/show_bug.cgi?id=226869
+        <rdar://77548905>
+
+        Reviewed by Per Arne Vollan and Simon Fraser.
+
+        SoftLink
+        1. VTRestrictVideoDecoders from VideoToolbox
+        2. FigPhotoSupportsHEVCHWDecode from MediaToobox
+
+        * PAL.xcodeproj/project.pbxproj:
+        * pal/cf/VideoToolboxSoftLink.cpp:
+        * pal/cf/VideoToolboxSoftLink.h:
+        * pal/cocoa/MediaToolboxSoftLink.cpp:
+        * pal/cocoa/MediaToolboxSoftLink.h:
+        * pal/spi/cg/ImageIOSPI.h:
+        * pal/spi/cocoa/VideoToolboxSPI.h: Added.
+
+2021-06-16  Said Abou-Hallawa  <said@apple.com>
+
+        takeSnapshotWithConfiguration() should wait for the next flush before it does callSnapshotRect()
+        https://bugs.webkit.org/show_bug.cgi?id=226257
+        <rdar://76411685>
+
+        Reviewed by Simon Fraser and Tim Horton.
+
+        * pal/spi/cocoa/QuartzCoreSPI.h:
+
+2021-06-15  Jonathan Bedard  <jbedard@apple.com>
+
+        [iOS 15] Support building WebKit
+        https://bugs.webkit.org/show_bug.cgi?id=227002
+        <rdar://problem/79316598>
+
+        Reviewed by Tim Horton.
+
+        * pal/spi/ios/QuickLookSPI.h:
+
+2021-06-14  Jonathan Bedard  <jbedard@apple.com>
+
+        [Monterey] Support building WebKit (Part 2)
+        https://bugs.webkit.org/show_bug.cgi?id=226846
+        <rdar://problem/79095148>
+
+        Reviewed by Chris Dumez.
+
+        * pal/spi/cf/CFNetworkSPI.h: Add nw_connection_privacy_stance_t.
+        * pal/spi/cocoa/PassKitSPI.h: Add PKPaymentCoupon.
+
+2021-06-11  Wenson Hsieh  <wenson_hsieh@apple.com>
+
+        [Cocoa] Clean up some VisionKitCore soft linking code in WebKit
+        https://bugs.webkit.org/show_bug.cgi?id=226941
+
+        Reviewed by Tim Horton.
+
+        Move softlinking code out of implementation files in WebKit (see WebKit/ChangeLog for details), and into
+        dedicated VisionKitCore SPI and soft-linking headers in PAL.
+
+        * PAL.xcodeproj/project.pbxproj:
+        * pal/PlatformMac.cmake:
+        * pal/cocoa/VisionKitCoreSoftLink.h: Copied from Source/WebKit/Platform/cocoa/TextRecognitionUtilities.h.
+        * pal/cocoa/VisionKitCoreSoftLink.mm: Copied from Source/WebKit/Platform/cocoa/TextRecognitionUtilities.h.
+        * pal/spi/cocoa/VisionKitCoreSPI.h: Renamed from Source/WebKit/Platform/spi/Cocoa/VisionKitSPI.h.
+
+2021-06-11  Jonathan Bedard  <jbedard@apple.com>
+
+        [Monterey] Support building WebKit (Follow-up fix)
+        https://bugs.webkit.org/show_bug.cgi?id=226846
+        <rdar://problem/79095148>
+
+        Unreviewed build fix.
+
+        * pal/spi/mac/QuickLookMacSPI.h:
+
+2021-06-11  Jonathan Bedard  <jbedard@apple.com>
+
+        [Monterey] Support building WebKit
+        https://bugs.webkit.org/show_bug.cgi?id=226846
+        <rdar://problem/79095148>
+
+        Reviewed by Tim Horton.
+
+        * pal/spi/cocoa/CryptoKitCBridgingSPI.h: Add RSA BSSA declarations.
+        * pal/spi/mac/QuickLookMacSPI.h: Add Image Analysis declarations.
+
+2021-06-08  Alex Christensen  <achristensen@webkit.org>
+
+        Move PrivacyStance code from WebKitAdditions
+        https://bugs.webkit.org/show_bug.cgi?id=226774
+
+        Reviewed by Jer Noble.
+
+        * pal/spi/cf/CFNetworkSPI.h:
+
+2021-06-08  Devin Rousso  <drousso@apple.com>
+
+        [Payment Request] upstream new features
+        https://bugs.webkit.org/show_bug.cgi?id=226740
+        <rdar://problem/78963132>
+
+        Reviewed by Andy Estes.
+
+         - recurring line items (`HAVE_PASSKIT_RECURRING_SUMMARY_ITEM` and `ENABLE_APPLE_PAY_RECURRING_LINE_ITEM`)
+         - deferred line items (`HAVE_PASSKIT_DEFERRED_SUMMARY_ITEM` and `ENABLE_APPLE_PAY_DEFERRED_LINE_ITEM`)
+         - estimated shipping dates (`HAVE_PASSKIT_SHIPPING_METHOD_DATE_COMPONENTS_RANGE` and `ENABLE_APPLE_PAY_SHIPPING_METHOD_DATE_COMPONENTS_RANGE`)
+         - coupon code entry (`HAVE_PASSKIT_COUPON_CODE` and `ENABLE_APPLE_PAY_COUPON_CODE`)
+         - shipped vs in-store pickup (`HAVE_PASSKIT_SHIPPING_CONTACT_EDITING_MODE` and `ENABLE_APPLE_PAY_SHIPPING_CONTACT_EDITING_MODE`)
+
+        * pal/cocoa/PassKitSoftLink.h:
+        * pal/cocoa/PassKitSoftLink.mm:
+        * pal/spi/cocoa/PassKitSPI.h:
+
 2021-06-06  Commit Queue  <commit-queue@webkit.org>
 
         Unreviewed, reverting r277464.

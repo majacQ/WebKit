@@ -189,10 +189,6 @@ interface ID3D11Device1;
 #include "PlatformXRSystem.h"
 #endif
 
-#if USE(APPLE_INTERNAL_SDK)
-#import <WebKitAdditions/WebPageProxyAdditionsBefore.h>
-#endif
-
 namespace API {
 class Attachment;
 class ContentWorld;
@@ -230,8 +226,9 @@ OBJC_CLASS NSMenu;
 OBJC_CLASS NSTextAlternatives;
 OBJC_CLASS NSView;
 OBJC_CLASS QLPreviewPanel;
+OBJC_CLASS SYNotesActivationObserver;
 OBJC_CLASS WKQLThumbnailLoadOperation;
-OBJC_CLASS WKVisualSearchPreviewController;
+OBJC_CLASS WKQuickLookPreviewController;
 OBJC_CLASS WKWebView;
 OBJC_CLASS _WKRemoteObjectRegistry;
 #endif
@@ -408,6 +405,7 @@ struct WebSpeechSynthesisVoice;
 enum class TextRecognitionUpdateResult : uint8_t;
 enum class NegotiatedLegacyTLS : bool;
 enum class ProcessSwapRequestedByClient : bool;
+enum class QuickLookPreviewActivity : uint8_t;
 enum class UndoOrRedo : bool;
 enum class WebContentMode : uint8_t;
 
@@ -887,10 +885,6 @@ public:
     void deleteSurrounding(int64_t offset, unsigned characterCount);
 
     void setInputMethodState(std::optional<InputMethodState>&&);
-#endif
-
-#if PLATFORM(GTK)
-    void getCenterForZoomGesture(const WebCore::IntPoint& centerInViewCoordinates, WebCore::IntPoint& center);
 #endif
 
 #if PLATFORM(COCOA)
@@ -1897,6 +1891,7 @@ public:
     void storeAppHighlight(const WebCore::AppHighlight&);
     void restoreAppHighlightsAndScrollToIndex(const Vector<Ref<WebKit::SharedMemory>>& highlights, const std::optional<unsigned> index);
     void setAppHighlightsVisibility(const WebCore::HighlightVisibility);
+    bool appHighlightsVisibility();
 #endif
 
 #if ENABLE(MEDIA_STREAM)
@@ -1943,7 +1938,7 @@ public:
     bool isRunningModalJavaScriptDialog() const { return m_isRunningModalJavaScriptDialog; }
 
 #if ENABLE(IMAGE_ANALYSIS) && PLATFORM(MAC)
-    WKVisualSearchPreviewController *visualSearchPreviewController() const { return m_visualSearchPreviewController.get(); }
+    WKQuickLookPreviewController *quickLookPreviewController() const { return m_quickLookPreviewController.get(); }
 #endif
 
 private:
@@ -2495,7 +2490,11 @@ private:
     void runModalJavaScriptDialog(RefPtr<WebFrameProxy>&&, FrameInfoData&&, const String& message, CompletionHandler<void(WebPageProxy&, WebFrameProxy*, FrameInfoData&&, const String&, CompletionHandler<void()>&&)>&&);
 
 #if ENABLE(IMAGE_ANALYSIS) && PLATFORM(MAC)
-    void showImageInVisualSearchPreviewPanel(ShareableBitmap& imageBitmap, const String& tooltip, const URL& imageURL);
+    void showImageInQuickLookPreviewPanel(ShareableBitmap& imageBitmap, const String& tooltip, const URL& imageURL, QuickLookPreviewActivity);
+#endif
+        
+#if ENABLE(APP_HIGHLIGHTS)
+    void setUpHighlightsObserver();
 #endif
 
     const Identifier m_identifier;
@@ -3045,12 +3044,12 @@ private:
     std::unique_ptr<PlatformXRSystem> m_xrSystem;
 #endif
 
-#if USE(APPLE_INTERNAL_SDK)
-#import <WebKitAdditions/WebPageProxyAdditionsAfter.h>
+#if ENABLE(APP_HIGHLIGHTS)
+    RetainPtr<SYNotesActivationObserver> m_appHighlightsObserver;
 #endif
 
 #if ENABLE(IMAGE_ANALYSIS) && PLATFORM(MAC)
-    RetainPtr<WKVisualSearchPreviewController> m_visualSearchPreviewController;
+    RetainPtr<WKQuickLookPreviewController> m_quickLookPreviewController;
 #endif
 };
 

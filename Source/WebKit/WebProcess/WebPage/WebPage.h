@@ -244,6 +244,7 @@ struct PromisedAttachmentInfo;
 struct RequestStorageAccessResult;
 struct RunJavaScriptParameters;
 struct TextCheckingResult;
+struct TextRecognitionResult;
 struct ViewportArguments;
 
 #if ENABLE(ATTACHMENT_ELEMENT)
@@ -466,7 +467,6 @@ public:
     void removeWebEditCommand(WebUndoStepID);
     bool isInRedo() const { return m_isInRedo; }
 
-    bool isAlwaysOnLoggingAllowed() const;
     void setActivePopupMenu(WebPopupMenu*);
 
     void setHiddenPageDOMTimerThrottlingIncreaseLimit(Seconds limit)
@@ -888,8 +888,6 @@ public:
 #if PLATFORM(GTK)
     void collapseSelectionInFrame(WebCore::FrameIdentifier);
     void showEmojiPicker(WebCore::Frame&);
-
-    void getCenterForZoomGesture(const WebCore::IntPoint& centerInViewCoordinates, CompletionHandler<void(WebCore::IntPoint&&)>&&);
 
     void themeDidChange(String&&);
 #endif
@@ -1356,10 +1354,10 @@ public:
 
 #if PLATFORM(IOS_FAMILY)
     // This excludes layout overflow, includes borders.
-    static WebCore::IntRect rootViewBoundsForElement(const WebCore::Element&);
+    static WebCore::IntRect rootViewBounds(const WebCore::Node&);
     // These include layout overflow for overflow:visible elements, but exclude borders.
-    static WebCore::IntRect absoluteInteractionBoundsForElement(const WebCore::Element&);
-    static WebCore::IntRect rootViewInteractionBoundsForElement(const WebCore::Element&);
+    static WebCore::IntRect absoluteInteractionBounds(const WebCore::Node&);
+    static WebCore::IntRect rootViewInteractionBounds(const WebCore::Node&);
 
     InteractionInformationAtPosition positionInformation(const InteractionInformationRequest&);
     
@@ -1405,7 +1403,7 @@ public:
 
 #if ENABLE(IMAGE_ANALYSIS)
     void requestTextRecognition(WebCore::Element&, CompletionHandler<void(RefPtr<WebCore::Element>&&)>&&);
-    void updateWithTextRecognitionResult(WebCore::TextRecognitionResult&&, const WebCore::ElementContext&, const WebCore::FloatPoint& location, CompletionHandler<void(TextRecognitionUpdateResult)>&&);
+    void updateWithTextRecognitionResult(const WebCore::TextRecognitionResult&, const WebCore::ElementContext&, const WebCore::FloatPoint& location, CompletionHandler<void(TextRecognitionUpdateResult)>&&);
 #endif
 
 #if HAVE(TRANSLATION_UI_SERVICES) && ENABLE(CONTEXT_MENUS)
@@ -2349,7 +2347,6 @@ private:
 
 #if ENABLE(IMAGE_ANALYSIS)
     Vector<std::pair<WeakPtr<WebCore::HTMLElement>, Vector<CompletionHandler<void(RefPtr<WebCore::Element>&&)>>>> m_elementsPendingTextRecognition;
-    WeakHashSet<WebCore::HTMLElement> m_elementsWithTextRecognitionResults;
 #endif
 
 #if ENABLE(WEBXR) && PLATFORM(COCOA)

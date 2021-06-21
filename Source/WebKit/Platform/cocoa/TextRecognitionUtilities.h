@@ -35,7 +35,7 @@ struct TextRecognitionResult;
 
 namespace WebKit {
 
-bool isLiveTextEnabled();
+bool isLiveTextAvailableAndEnabled();
 WebCore::TextRecognitionResult makeTextRecognitionResult(VKImageAnalysis *);
 
 }

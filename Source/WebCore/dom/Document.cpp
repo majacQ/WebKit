@@ -257,10 +257,8 @@
 #include "XPathExpression.h"
 #include "XPathNSResolver.h"
 #include "XPathResult.h"
-#include <JavaScriptCore/ConsoleClient.h>
 #include <JavaScriptCore/ConsoleMessage.h>
 #include <JavaScriptCore/RegularExpression.h>
-#include <JavaScriptCore/ScriptArguments.h>
 #include <JavaScriptCore/ScriptCallStack.h>
 #include <JavaScriptCore/VM.h>
 #include <ctime>
@@ -344,8 +342,8 @@
 #include "HTMLVideoElement.h"
 #endif
 
-#define RELEASE_LOG_IF_ALLOWED(channel, fmt, ...) RELEASE_LOG_IF(isAlwaysOnLoggingAllowed(), channel, "%p - [pageID=%" PRIu64 ", frameID=%" PRIu64 ", main=%d] Document::" fmt, this, pageID().value_or(PageIdentifier { }).toUInt64(), frameID().value_or(FrameIdentifier { }).toUInt64(), this == &topDocument(), ##__VA_ARGS__)
-#define RELEASE_LOG_ERROR_IF_ALLOWED(channel, fmt, ...) RELEASE_LOG_ERROR_IF(isAlwaysOnLoggingAllowed(), channel, "%p - [pageID=%" PRIu64 ", frameID=%" PRIu64 ", main=%d] Document::" fmt, this, pageID().value_or(PageIdentifier { }).toUInt64(), frameID().value_or(FrameIdentifier { }).toUInt64(), this == &topDocument(), ##__VA_ARGS__)
+#define DOCUMENT_RELEASE_LOG(channel, fmt, ...) RELEASE_LOG(channel, "%p - [pageID=%" PRIu64 ", frameID=%" PRIu64 ", main=%d] Document::" fmt, this, pageID().value_or(PageIdentifier { }).toUInt64(), frameID().value_or(FrameIdentifier { }).toUInt64(), this == &topDocument(), ##__VA_ARGS__)
+#define DOCUMENT_RELEASE_LOG_ERROR(channel, fmt, ...) RELEASE_LOG_ERROR(channel, "%p - [pageID=%" PRIu64 ", frameID=%" PRIu64 ", main=%d] Document::" fmt, this, pageID().value_or(PageIdentifier { }).toUInt64(), frameID().value_or(FrameIdentifier { }).toUInt64(), this == &topDocument(), ##__VA_ARGS__)
 
 namespace WebCore {
 
@@ -3537,7 +3535,7 @@ bool Document::canNavigate(Frame* targetFrame, const URL& destinationURL)
 
     if (isNavigationBlockedByThirdPartyIFrameRedirectBlocking(*targetFrame, destinationURL)) {
         printNavigationErrorMessage(*targetFrame, url(), "The frame attempting navigation of the top-level window is cross-origin or untrusted and the user has never interacted with the frame."_s);
-        RELEASE_LOG_ERROR_IF_ALLOWED(Loading, "Navigation was prevented because it was triggered by a cross-origin or untrusted iframe");
+        DOCUMENT_RELEASE_LOG_ERROR(Loading, "Navigation was prevented because it was triggered by a cross-origin or untrusted iframe");
         return false;
     }
 
@@ -5753,34 +5751,47 @@ static Editor::Command command(Document* document, const String& commandName, bo
         userInterface ? CommandFromDOMWithUserInterface : CommandFromDOM);
 }
 
-bool Document::execCommand(const String& commandName, bool userInterface, const String& value)
+ExceptionOr<bool> Document::execCommand(const String& commandName, bool userInterface, const String& value)
 {
+    if (UNLIKELY(!isHTMLDocument() && !isXHTMLDocument()))
+        return Exception { InvalidStateError, "execCommand is only supported on HTML documents." };
+
     EventQueueScope eventQueueScope;
     return command(this, commandName, userInterface).execute(value);
 }
 
-bool Document::queryCommandEnabled(const String& commandName)
+ExceptionOr<bool> Document::queryCommandEnabled(const String& commandName)
 {
+    if (UNLIKELY(!isHTMLDocument() && !isXHTMLDocument()))
+        return Exception { InvalidStateError, "queryCommandEnabled is only supported on HTML documents." };
     return command(this, commandName).isEnabled();
 }
 
-bool Document::queryCommandIndeterm(const String& commandName)
+ExceptionOr<bool> Document::queryCommandIndeterm(const String& commandName)
 {
+    if (UNLIKELY(!isHTMLDocument() && !isXHTMLDocument()))
+        return Exception { InvalidStateError, "queryCommandIndeterm is only supported on HTML documents." };
     return command(this, commandName).state() == TriState::Indeterminate;
 }
 
-bool Document::queryCommandState(const String& commandName)
+ExceptionOr<bool> Document::queryCommandState(const String& commandName)
 {
+    if (UNLIKELY(!isHTMLDocument() && !isXHTMLDocument()))
+        return Exception { InvalidStateError, "queryCommandState is only supported on HTML documents." };
     return command(this, commandName).state() == TriState::True;
 }
 
-bool Document::queryCommandSupported(const String& commandName)
+ExceptionOr<bool> Document::queryCommandSupported(const String& commandName)
 {
+    if (UNLIKELY(!isHTMLDocument() && !isXHTMLDocument()))
+        return Exception { InvalidStateError, "queryCommandSupported is only supported on HTML documents." };
     return command(this, commandName).isSupported();
 }
 
-String Document::queryCommandValue(const String& commandName)
+ExceptionOr<String> Document::queryCommandValue(const String& commandName)
 {
+    if (UNLIKELY(!isHTMLDocument() && !isXHTMLDocument()))
+        return Exception { InvalidStateError, "queryCommandValue is only supported on HTML documents." };
     return command(this, commandName).value();
 }
 
@@ -8503,20 +8514,13 @@ void Document::didLogMessage(const WTFLogChannel& channel, WTFLogLevel level, Ve
     if (messageSource == MessageSource::Other)
         return;
 
-    auto messageLevel = messageLevelFromWTFLogLevel(level);
-    auto message = makeUnique<Inspector::ConsoleMessage>(messageSource, MessageType::Log, messageLevel, WTFMove(logMessages), mainWorldExecState(frame()));
-
-    if (UNLIKELY(page->settings().logsPageMessagesToSystemConsoleEnabled() || PageConsoleClient::shouldPrintExceptions())) {
-        if (message->type() == MessageType::Image) {
-            ASSERT(message->arguments());
-            JSC::ConsoleClient::printConsoleMessageWithArguments(message->source(), message->type(), message->level(), message->arguments()->globalObject(), *message->arguments());
-        } else
-            JSC::ConsoleClient::printConsoleMessage(message->source(), message->type(), message->level(), message->toString(), message->url(), message->line(), message->column());
-    }
-
-    eventLoop().queueTask(TaskSource::InternalAsyncTask, [weakThis = makeWeakPtr(*this), message = WTFMove(message)]() mutable {
+    eventLoop().queueTask(TaskSource::InternalAsyncTask, [weakThis = makeWeakPtr(*this), level, messageSource, logMessages = WTFMove(logMessages)]() mutable {
         if (!weakThis || !weakThis->page())
             return;
+
+        auto messageLevel = messageLevelFromWTFLogLevel(level);
+        auto message = makeUnique<Inspector::ConsoleMessage>(messageSource, MessageType::Log, messageLevel, WTFMove(logMessages), mainWorldExecState(weakThis->frame()));
+
         weakThis->addConsoleMessage(WTFMove(message));
     });
 }
@@ -8737,11 +8741,6 @@ bool Document::shouldIgnoreSyncXHRs() const
     return m_numberOfRejectedSyncXHRs > maxRejectedSyncXHRsPerEventLoopIteration;
 }
 
-bool Document::isAlwaysOnLoggingAllowed() const
-{
-    return !m_frame || m_frame->isAlwaysOnLoggingAllowed();
-}
-
 #if ENABLE(APPLE_PAY)
 
 bool Document::isApplePayActive() const
@@ -8859,5 +8858,5 @@ JSC::VM& Document::vm()
 
 } // namespace WebCore
 
-#undef RELEASE_LOG_IF_ALLOWED
-#undef RELEASE_LOG_ERROR_IF_ALLOWED
+#undef DOCUMENT_RELEASE_LOG
+#undef DOCUMENT_RELEASE_LOG_ERROR

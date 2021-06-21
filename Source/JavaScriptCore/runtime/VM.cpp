@@ -29,6 +29,7 @@
 #include "config.h"
 #include "VM.h"
 
+#include "AccessCase.h"
 #include "AggregateError.h"
 #include "ArgList.h"
 #include "BigIntObject.h"
@@ -567,6 +568,7 @@ VM::VM(VMType vmType, HeapType heapType, WTF::RunLoop* runLoop, bool* success)
 #endif // ENABLE(FTL_JIT)
         getCTIInternalFunctionTrampolineFor(CodeForCall);
         getCTIInternalFunctionTrampolineFor(CodeForConstruct);
+        m_sharedJITStubs = makeUnique<SharedJITStubSet>();
     }
 #endif // ENABLE(JIT)
 
@@ -654,6 +656,10 @@ VM::~VM()
 #if ENABLE(DFG_JIT)
     for (unsigned i = 0; i < m_scratchBuffers.size(); ++i)
         VMMalloc::free(m_scratchBuffers[i]);
+#endif
+
+#if ENABLE(JIT)
+    m_sharedJITStubs = nullptr;
 #endif
 }
 
@@ -1362,13 +1368,15 @@ void VM::callPromiseRejectionCallback(Strong<JSPromise>& promise)
 
 void VM::didExhaustMicrotaskQueue()
 {
-    auto unhandledRejections = WTFMove(m_aboutToBeNotifiedRejectedPromises);
-    for (auto& promise : unhandledRejections) {
-        if (promise->isHandled(*this))
-            continue;
+    do {
+        auto unhandledRejections = WTFMove(m_aboutToBeNotifiedRejectedPromises);
+        for (auto& promise : unhandledRejections) {
+            if (promise->isHandled(*this))
+                continue;
 
-        callPromiseRejectionCallback(promise);
-    }
+            callPromiseRejectionCallback(promise);
+        }
+    } while (!m_aboutToBeNotifiedRejectedPromises.isEmpty());
 }
 
 void VM::promiseRejected(JSPromise* promise)

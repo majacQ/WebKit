@@ -536,7 +536,7 @@ static RefPtr<CSSValue> consumeFontVariationTag(CSSParserTokenRange& range)
     if (range.peek().type() != StringToken)
         return nullptr;
     
-    auto string = range.consumeIncludingWhitespace().value().toString();
+    auto string = range.consumeIncludingWhitespace().value();
     
     FontTag tag;
     if (string.length() != tag.size())
@@ -2258,22 +2258,20 @@ static RefPtr<CSSPrimitiveValue> consumeRxOrRy(CSSParserTokenRange& range, CSSPa
 static RefPtr<CSSValue> consumeCursor(CSSParserTokenRange& range, const CSSParserContext& context, bool inQuirksMode)
 {
     RefPtr<CSSValueList> list;
-    while (RefPtr<CSSValue> image = consumeImage(range, context, { AllowedImageType::URLFunction, AllowedImageType::ImageSet })) {
-        IntPoint hotSpot(-1, -1);
-        bool hotSpotSpecified = false;
+    while (auto image = consumeImage(range, context, { AllowedImageType::URLFunction, AllowedImageType::ImageSet })) {
+        std::optional<IntPoint> hotSpot;
         if (auto x = consumeNumberRaw(range)) {
-            hotSpot.setX(static_cast<int>(*x));
             auto y = consumeNumberRaw(range);
             if (!y)
                 return nullptr;
-            hotSpot.setY(static_cast<int>(*y));
-            hotSpotSpecified = true;
+            // FIXME: Should we clamp or round instead of just casting from double to int?
+            hotSpot = IntPoint { static_cast<int>(*x), static_cast<int>(*y) };
         }
 
         if (!list)
             list = CSSValueList::createCommaSeparated();
 
-        list->append(CSSCursorImageValue::create(image.releaseNonNull(), hotSpotSpecified, hotSpot, context.isContentOpaque ? LoadedFromOpaqueSource::Yes : LoadedFromOpaqueSource::No));
+        list->append(CSSCursorImageValue::create(image.releaseNonNull(), hotSpot, context.isContentOpaque ? LoadedFromOpaqueSource::Yes : LoadedFromOpaqueSource::No));
         if (!consumeCommaIncludingWhitespace(range))
             return nullptr;
     }
@@ -2303,9 +2301,11 @@ static RefPtr<CSSValue> consumeAttr(CSSParserTokenRange args, CSSParserContext c
         return nullptr;
     
     CSSParserToken token = args.consumeIncludingWhitespace();
-    auto attrName = token.value().toAtomString();
+    AtomString attrName;
     if (context.isHTMLDocument)
-        attrName = attrName.convertToASCIILowercase();
+        attrName = token.value().convertToASCIILowercaseAtom();
+    else
+        attrName = token.value().toAtomString();
 
     if (!args.atEnd())
         return nullptr;
@@ -3329,23 +3329,20 @@ static bool isGridTrackFixedSized(const CSSValue& value)
     return isGridTrackFixedSized(*minPrimitiveValue) || isGridTrackFixedSized(*maxPrimitiveValue);
 }
 
-static Vector<String> parseGridTemplateAreasColumnNames(const String& gridRowNames)
+static Vector<String> parseGridTemplateAreasColumnNames(StringView gridRowNames)
 {
     ASSERT(!gridRowNames.isEmpty());
     Vector<String> columnNames;
-    // Using StringImpl to avoid checks and indirection in every call to String::operator[].
-    StringImpl& text = *gridRowNames.impl();
-
     StringBuilder areaName;
-    for (unsigned i = 0; i < text.length(); ++i) {
-        if (isCSSSpace(text[i])) {
+    for (auto character : gridRowNames.codeUnits()) {
+        if (isCSSSpace(character)) {
             if (!areaName.isEmpty()) {
                 columnNames.append(areaName.toString());
                 areaName.clear();
             }
             continue;
         }
-        if (text[i] == '.') {
+        if (character == '.') {
             if (areaName == ".")
                 continue;
             if (!areaName.isEmpty()) {
@@ -3353,7 +3350,7 @@ static Vector<String> parseGridTemplateAreasColumnNames(const String& gridRowNam
                 areaName.clear();
             }
         } else {
-            if (!isNameCodePoint(text[i]))
+            if (!isNameCodePoint(character))
                 return Vector<String>();
             if (areaName == ".") {
                 columnNames.append(areaName.toString());
@@ -3361,7 +3358,7 @@ static Vector<String> parseGridTemplateAreasColumnNames(const String& gridRowNam
             }
         }
 
-        areaName.append(text[i]);
+        areaName.append(character);
     }
 
     if (!areaName.isEmpty())
@@ -3370,7 +3367,7 @@ static Vector<String> parseGridTemplateAreasColumnNames(const String& gridRowNam
     return columnNames;
 }
 
-static bool parseGridTemplateAreasRow(const String& gridRowNames, NamedGridAreaMap& gridAreaMap, const size_t rowCount, size_t& columnCount)
+static bool parseGridTemplateAreasRow(StringView gridRowNames, NamedGridAreaMap& gridAreaMap, const size_t rowCount, size_t& columnCount)
 {
     if (gridRowNames.isAllSpecialCharacters<isCSSSpace>())
         return false;
@@ -3595,7 +3592,7 @@ static RefPtr<CSSValue> consumeGridTemplateAreas(CSSParserTokenRange& range)
     size_t columnCount = 0;
 
     while (range.peek().type() == StringToken) {
-        if (!parseGridTemplateAreasRow(range.consumeIncludingWhitespace().value().toString(), gridAreaMap, rowCount, columnCount))
+        if (!parseGridTemplateAreasRow(range.consumeIncludingWhitespace().value(), gridAreaMap, rowCount, columnCount))
             return nullptr;
         ++rowCount;
     }
@@ -4669,37 +4666,32 @@ static RefPtr<CSSValue> consumeCounterStyleSymbols(CSSParserTokenRange& range, c
 static RefPtr<CSSValue> consumeCounterStyleAdditiveSymbols(CSSParserTokenRange& range, const CSSParserContext& context)
 {
     auto values = CSSValueList::createCommaSeparated();
-    RefPtr<CSSPrimitiveValue> lastInteger;
+    std::optional<int> lastWeight;
     do {
-        RefPtr<CSSPrimitiveValue> integer;
-        RefPtr<CSSValue> symbol;
-        while (!integer || !symbol) {
-            if (!integer) {
-                integer = consumeInteger(range, 0);
-                if (integer)
-                    continue;
-            }
-            if (!symbol) {
-                symbol = consumeCounterStyleSymbol(range, context);
-                if (symbol)
-                    continue;
-            }
-            return nullptr;
-        }
-
-        if (lastInteger) {
-            // The additive tuples must be specified in order of strictly descending
-            // weight; otherwise, the declaration is invalid and must be ignored.
-            if (integer->intValue() >= lastInteger->intValue())
+        auto integer = consumeInteger(range, 0);
+        auto symbol = consumeCounterStyleSymbol(range, context);
+        if (!integer) {
+            if (!symbol)
+                return nullptr;
+            integer = consumeInteger(range, 0);
+            if (!integer)
                 return nullptr;
         }
-        lastInteger = integer;
-        values->append(integer.releaseNonNull());
-        values->append(symbol.releaseNonNull());
+
+        // Additive tuples must be specified in order of strictly descending weight.
+        auto weight = integer->intValue();
+        if (lastWeight && !(weight < lastWeight))
+            return nullptr;
+        lastWeight = weight;
+
+        auto pair = CSSValueList::createSpaceSeparated();
+        pair->append(integer.releaseNonNull());
+        pair->append(symbol.releaseNonNull());
+        values->append(WTFMove(pair));
     } while (consumeCommaIncludingWhitespace(range));
     if (!range.atEnd() || !values->length())
         return nullptr;
-    return values;
+    return WTFMove(values);
 }
 
 // https://www.w3.org/TR/css-counter-styles-3/#counter-style-speak-as
@@ -5611,7 +5603,7 @@ bool CSSPropertyParser::consumeGridTemplateRowsAndAreasAndColumns(CSSPropertyID 
             templateRows->append(lineNames.releaseNonNull());
 
         // Handle a template-area's row.
-        if (m_range.peek().type() != StringToken || !parseGridTemplateAreasRow(m_range.consumeIncludingWhitespace().value().toString(), gridAreaMap, rowCount, columnCount))
+        if (m_range.peek().type() != StringToken || !parseGridTemplateAreasRow(m_range.consumeIncludingWhitespace().value(), gridAreaMap, rowCount, columnCount))
             return false;
         ++rowCount;
 

@@ -24,6 +24,18 @@
 
 namespace WebCore {
 
+static LayoutRect rectForPoint(const LayoutPoint& point, unsigned topPadding, unsigned rightPadding, unsigned bottomPadding, unsigned leftPadding)
+{
+    auto adjustedPosition = LayoutPoint { flooredIntPoint(point) };
+    adjustedPosition -= LayoutSize  { leftPadding, topPadding };
+
+    auto width = LayoutUnit { leftPadding + rightPadding };
+    auto height = LayoutUnit { topPadding + bottomPadding };
+    // As IntRect is left inclusive and right exclusive (seeing IntRect::contains(x, y)), adding "1".
+    // FIXME: Remove this once non-rect based hit-detection stops using IntRect:intersects.
+    return { adjustedPosition, LayoutSize { width + 1, height + 1 } };
+}
+
 HitTestLocation::HitTestLocation() = default;
 
 HitTestLocation::HitTestLocation(const LayoutPoint& point)
@@ -31,11 +43,6 @@ HitTestLocation::HitTestLocation(const LayoutPoint& point)
     , m_boundingBox(rectForPoint(point, 0, 0, 0, 0))
     , m_transformedPoint(point)
     , m_transformedRect(m_boundingBox)
-{
-}
-
-HitTestLocation::HitTestLocation(const FloatPoint& point)
-    : HitTestLocation::HitTestLocation { flooredLayoutPoint(point) }
 {
 }
 
@@ -145,19 +152,6 @@ bool HitTestLocation::intersects(const FloatRect& rect) const
 bool HitTestLocation::intersects(const RoundedRect& rect) const
 {
     return rect.intersectsQuad(m_transformedRect);
-}
-
-IntRect HitTestLocation::rectForPoint(const LayoutPoint& point, unsigned topPadding, unsigned rightPadding, unsigned bottomPadding, unsigned leftPadding)
-{
-    IntPoint actualPoint(flooredIntPoint(point));
-    actualPoint -= IntSize(leftPadding, topPadding);
-
-    IntSize actualPadding(leftPadding + rightPadding, topPadding + bottomPadding);
-    // As IntRect is left inclusive and right exclusive (seeing IntRect::contains(x, y)), adding "1".
-    // FIXME: Remove this once non-rect based hit-detection stops using IntRect:intersects.
-    actualPadding += IntSize(1, 1);
-
-    return IntRect(actualPoint, actualPadding);
 }
 
 } // namespace WebCore

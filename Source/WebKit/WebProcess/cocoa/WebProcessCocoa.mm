@@ -26,6 +26,7 @@
 #import "config.h"
 #import "WebProcess.h"
 
+#import "AccessibilitySupportSPI.h"
 #import "GPUProcessConnectionParameters.h"
 #import "LegacyCustomProtocolManager.h"
 #import "LogInitialization.h"
@@ -86,10 +87,12 @@
 #import <pal/spi/cf/CFUtilitiesSPI.h>
 #import <pal/spi/cg/CoreGraphicsSPI.h>
 #import <pal/spi/cocoa/AVFoundationSPI.h>
+#import <pal/spi/cocoa/AccessibilitySupportSPI.h>
 #import <pal/spi/cocoa/CoreServicesSPI.h>
 #import <pal/spi/cocoa/LaunchServicesSPI.h>
 #import <pal/spi/cocoa/NSAccessibilitySPI.h>
 #import <pal/spi/cocoa/QuartzCoreSPI.h>
+#import <pal/spi/cocoa/VideoToolboxSPI.h>
 #import <pal/spi/cocoa/pthreadSPI.h>
 #import <pal/spi/mac/NSApplicationSPI.h>
 #import <stdio.h>
@@ -149,8 +152,13 @@
 #import <os/state_private.h>
 #endif
 
+#if HAVE(MEDIA_ACCESSIBILITY_FRAMEWORK)
+#include <WebCore/CaptionUserPreferencesMediaAF.h>
+#endif
+
 #import <WebCore/MediaAccessibilitySoftLink.h>
 #import <pal/cf/AudioToolboxSoftLink.h>
+#import <pal/cf/VideoToolboxSoftLink.h>
 #import <pal/cocoa/AVFoundationSoftLink.h>
 #import <pal/cocoa/MediaToolboxSoftLink.h>
 
@@ -165,15 +173,15 @@ SOFT_LINK_CLASS(CoreServices, _LSDService)
 SOFT_LINK_CLASS(CoreServices, _LSDOpenService)
 
 #define RELEASE_LOG_SESSION_ID (m_sessionID ? m_sessionID->toUInt64() : 0)
-#define RELEASE_LOG_IF_ALLOWED(channel, fmt, ...) RELEASE_LOG_IF(isAlwaysOnLoggingAllowed(), channel, "%p - [sessionID=%" PRIu64 "] WebProcess::" fmt, this, RELEASE_LOG_SESSION_ID, ##__VA_ARGS__)
-#define RELEASE_LOG_ERROR_IF_ALLOWED(channel, fmt, ...) RELEASE_LOG_ERROR_IF(isAlwaysOnLoggingAllowed(), channel, "%p - [sessionID=%" PRIu64 "] WebProcess::" fmt, this, RELEASE_LOG_SESSION_ID, ##__VA_ARGS__)
+#define WEBPROCESS_RELEASE_LOG(channel, fmt, ...) RELEASE_LOG(channel, "%p - [sessionID=%" PRIu64 "] WebProcess::" fmt, this, RELEASE_LOG_SESSION_ID, ##__VA_ARGS__)
+#define WEBPROCESS_RELEASE_LOG_ERROR(channel, fmt, ...) RELEASE_LOG_ERROR(channel, "%p - [sessionID=%" PRIu64 "] WebProcess::" fmt, this, RELEASE_LOG_SESSION_ID, ##__VA_ARGS__)
 
 #if PLATFORM(MAC)
 SOFT_LINK_FRAMEWORK_IN_UMBRELLA(ApplicationServices, HIServices)
 SOFT_LINK_FUNCTION_MAY_FAIL_FOR_SOURCE(WebKit, HIServices, _AXSetAuditTokenIsAuthenticatedCallback, void, (AXAuditTokenIsAuthenticatedCallback callback), (callback))
 #endif
 
-#if ENABLE(CFPREFS_DIRECT_MODE)
+#if HAVE(UPDATE_WEB_ACCESSIBILITY_SETTINGS) && ENABLE(CFPREFS_DIRECT_MODE)
 SOFT_LINK_LIBRARY(libAccessibility)
 SOFT_LINK_OPTIONAL(libAccessibility, _AXSUpdateWebAccessibilitySettings, void, (), ());
 #endif
@@ -364,6 +372,21 @@ void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& para
         launchServicesExtension->revoke();
 #endif
 
+#if PLATFORM(MAC) && HAVE(VIDEO_RESTRICTED_DECODING)
+    // Call FigPhotoSupportsHEVCHWDecode() while holding the trustd extension.
+    if (parameters.trustdAgentExtensionHandle) {
+        if (auto extension = SandboxExtension::create(WTFMove(*parameters.trustdAgentExtensionHandle))) {
+            bool ok = extension->consume();
+            // The purpose of calling this function is to initialize a static variable which needs
+            // the service com.apple.trustd.gent. And this is why we do not use its return value.
+            if (PAL::isMediaToolboxFrameworkAvailable() && PAL::canLoad_MediaToolbox_FigPhotoSupportsHEVCHWDecode())
+                PAL::softLinkMediaToolboxFigPhotoSupportsHEVCHWDecode();
+            ok = extension->revoke();
+            ASSERT_UNUSED(ok, ok);
+        }
+    }
+#endif
+
 #if PLATFORM(MAC)
     // App nap must be manually enabled when not running the NSApplication run loop.
     __CFRunLoopSetOptionsReason(__CFRunLoopOptionsEnableAppNap, CFSTR("Finished checkin as application - enable app nap"));
@@ -447,6 +470,8 @@ void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& para
     
     if (!parameters.maximumIOSurfaceSize.isEmpty())
         WebCore::IOSurface::setMaximumSize(parameters.maximumIOSurfaceSize);
+
+    accessibilityPreferencesDidChange(parameters.accessibilityPreferences);
 }
 
 void WebProcess::platformSetWebsiteDataStoreParameters(WebProcessDataStoreParameters&& parameters)
@@ -504,7 +529,7 @@ void WebProcess::updateProcessName(IsInProcessInitialization isInProcessInitiali
         mach_msg_type_number_t info_size = TASK_AUDIT_TOKEN_COUNT;
         kern_return_t kr = task_info(mach_task_self(), TASK_AUDIT_TOKEN, reinterpret_cast<integer_t *>(&auditToken), &info_size);
         if (kr != KERN_SUCCESS) {
-            RELEASE_LOG_ERROR_IF_ALLOWED(Process, "updateProcessName: Unable to get audit token for self. Error: %{public}s (%x)", mach_error_string(kr), kr);
+            WEBPROCESS_RELEASE_LOG_ERROR(Process, "updateProcessName: Unable to get audit token for self. Error: %{public}s (%x)", mach_error_string(kr), kr);
             return;
         }
         String displayName = applicationName.get();
@@ -517,7 +542,7 @@ void WebProcess::updateProcessName(IsInProcessInitialization isInProcessInitiali
     auto error = _LSSetApplicationInformationItem(kLSDefaultSessionID, _LSGetCurrentApplicationASN(), _kLSDisplayNameKey, (CFStringRef)applicationName.get(), nullptr);
     ASSERT(!error);
     if (error) {
-        RELEASE_LOG_ERROR_IF_ALLOWED(Process, "updateProcessName: Failed to set the display name of the WebContent process, error code=%ld", static_cast<long>(error));
+        WEBPROCESS_RELEASE_LOG_ERROR(Process, "updateProcessName: Failed to set the display name of the WebContent process, error code=%ld", static_cast<long>(error));
         return;
     }
 #if ASSERT_ENABLED
@@ -716,6 +741,29 @@ RetainPtr<CFDataRef> WebProcess::sourceApplicationAuditData() const
 #endif
 }
 
+#if HAVE(VIDEO_RESTRICTED_DECODING)
+static inline void restrictImageAndVideoDecoders()
+{
+    if (!(PAL::isVideoToolboxFrameworkAvailable() && PAL::canLoad_VideoToolbox_VTRestrictVideoDecoders()))
+        return;
+
+    CMVideoCodecType allowedCodecTypeList[] = {
+        kCMVideoCodecType_H263,
+        kCMVideoCodecType_H264,
+        kCMVideoCodecType_MPEG4Video,
+        kCMVideoCodecType_HEVC,
+        kCMVideoCodecType_HEVCWithAlpha
+    };
+
+    PAL::softLinkVideoToolboxVTRestrictVideoDecoders(
+        kVTRestrictions_RunVideoDecodersInProcess |
+        kVTRestrictions_AvoidHardwareDecoders |
+        kVTRestrictions_AvoidHardwarePixelTransfer |
+        kVTRestrictions_AvoidIOSurfaceBackings,
+        allowedCodecTypeList, sizeof(allowedCodecTypeList) / sizeof(allowedCodecTypeList[0]));
+}
+#endif
+
 void WebProcess::initializeSandbox(const AuxiliaryProcessInitializationParameters& parameters, SandboxInitializationParameters& sandboxParameters)
 {
 #if PLATFORM(MAC) || PLATFORM(MACCATALYST)
@@ -731,6 +779,10 @@ void WebProcess::initializeSandbox(const AuxiliaryProcessInitializationParameter
     sandboxParameters.addParameter("ENABLE_SANDBOX_MESSAGE_FILTER", enableMessageFilter ? "YES" : "NO");
 
     AuxiliaryProcess::initializeSandbox(parameters, sandboxParameters);
+#endif
+
+#if HAVE(VIDEO_RESTRICTED_DECODING)
+    restrictImageAndVideoDecoders();
 #endif
 }
 
@@ -783,7 +835,7 @@ void WebProcess::updateActivePages(const String& overrideDisplayName)
     mach_msg_type_number_t info_size = TASK_AUDIT_TOKEN_COUNT;
     kern_return_t kr = task_info(mach_task_self(), TASK_AUDIT_TOKEN, reinterpret_cast<integer_t *>(&auditToken), &info_size);
     if (kr != KERN_SUCCESS) {
-        RELEASE_LOG_ERROR_IF_ALLOWED(Process, "updateActivePages: Unable to get audit token for self. Error: %{public}s (%x)", mach_error_string(kr), kr);
+        WEBPROCESS_RELEASE_LOG_ERROR(Process, "updateActivePages: Unable to get audit token for self. Error: %{public}s (%x)", mach_error_string(kr), kr);
         return;
     }
 
@@ -850,9 +902,9 @@ void WebProcess::updateCPUMonitorState(CPUMonitorUpdateReason reason)
     if (!m_cpuMonitor) {
         m_cpuMonitor = makeUnique<CPUMonitor>(cpuMonitoringInterval, [this](double cpuUsage) {
             if (m_processType == ProcessType::ServiceWorker)
-                RELEASE_LOG_ERROR_IF_ALLOWED(ProcessSuspension, "updateCPUMonitorState: Service worker process exceeded CPU limit of %.1f%% (was using %.1f%%)", m_cpuLimit.value() * 100, cpuUsage * 100);
+                WEBPROCESS_RELEASE_LOG_ERROR(ProcessSuspension, "updateCPUMonitorState: Service worker process exceeded CPU limit of %.1f%% (was using %.1f%%)", m_cpuLimit.value() * 100, cpuUsage * 100);
             else
-                RELEASE_LOG_ERROR_IF_ALLOWED(ProcessSuspension, "updateCPUMonitorState: WebProcess exceeded CPU limit of %.1f%% (was using %.1f%%) hasVisiblePages? %d", m_cpuLimit.value() * 100, cpuUsage * 100, hasVisibleWebPage());
+                WEBPROCESS_RELEASE_LOG_ERROR(ProcessSuspension, "updateCPUMonitorState: WebProcess exceeded CPU limit of %.1f%% (was using %.1f%%) hasVisiblePages? %d", m_cpuLimit.value() * 100, cpuUsage * 100, hasVisibleWebPage());
             parentProcessConnection()->send(Messages::WebProcessProxy::DidExceedCPULimit(), 0);
         });
     } else if (reason == CPUMonitorUpdateReason::VisibilityHasChanged) {
@@ -948,7 +1000,7 @@ void WebProcess::destroyRenderingResources()
 #if !RELEASE_LOG_DISABLED
     MonotonicTime endTime = MonotonicTime::now();
 #endif
-    RELEASE_LOG_IF_ALLOWED(ProcessSuspension, "destroyRenderingResources: took %.2fms", (endTime - startTime).milliseconds());
+    WEBPROCESS_RELEASE_LOG(ProcessSuspension, "destroyRenderingResources: took %.2fms", (endTime - startTime).milliseconds());
 }
 
 #if PLATFORM(IOS_FAMILY)
@@ -988,9 +1040,9 @@ void WebProcess::updateFreezerStatus()
     bool isFreezable = shouldFreezeOnSuspension();
     auto result = memorystatus_control(MEMORYSTATUS_CMD_SET_PROCESS_IS_FREEZABLE, getpid(), isFreezable ? 1 : 0, nullptr, 0);
     if (result)
-        RELEASE_LOG_ERROR_IF_ALLOWED(ProcessSuspension, "updateFreezerStatus: isFreezable=%d, error=%d", isFreezable, result);
+        WEBPROCESS_RELEASE_LOG_ERROR(ProcessSuspension, "updateFreezerStatus: isFreezable=%d, error=%d", isFreezable, result);
     else
-        RELEASE_LOG_IF_ALLOWED(ProcessSuspension, "updateFreezerStatus: isFreezable=%d, success", isFreezable);
+        WEBPROCESS_RELEASE_LOG(ProcessSuspension, "updateFreezerStatus: isFreezable=%d, success", isFreezable);
 }
 #endif
 
@@ -1035,6 +1087,32 @@ void WebProcess::backlightLevelDidChange(float backlightLevel)
 }
 #endif
 
+void WebProcess::accessibilityPreferencesDidChange(const AccessibilityPreferences& preferences)
+{
+#if HAVE(PER_APP_ACCESSIBILITY_PREFERENCES)
+    auto appID = CFSTR("com.apple.WebKit.WebContent");
+    auto reduceMotionEnabled = preferences.reduceMotionEnabled ? AXValueStateOn : AXValueStateOff;
+    if (_AXSReduceMotionEnabledApp(appID) != reduceMotionEnabled)
+        _AXSSetReduceMotionEnabledApp(reduceMotionEnabled, appID);
+    auto increaseButtonLegibility = preferences.increaseButtonLegibility ? AXValueStateOn : AXValueStateOff;
+    if (_AXSIncreaseButtonLegibilityApp(appID) != increaseButtonLegibility)
+        _AXSSetIncreaseButtonLegibilityApp(increaseButtonLegibility, appID);
+    auto enhanceTextLegibility = preferences.enhanceTextLegibility ? AXValueStateOn : AXValueStateOff;
+    if (_AXSEnhanceTextLegibilityEnabledApp(appID) != enhanceTextLegibility)
+        _AXSSetEnhanceTextLegibilityEnabledApp(enhanceTextLegibility, appID);
+    auto darkenSystemColors = preferences.darkenSystemColors ? AXValueStateOn : AXValueStateOff;
+    if (_AXDarkenSystemColorsApp(appID) != darkenSystemColors)
+        _AXSSetDarkenSystemColorsApp(darkenSystemColors, appID);
+    auto invertColorsEnabled = preferences.invertColorsEnabled ? AXValueStateOn : AXValueStateOff;
+    if (_AXSInvertColorsEnabledApp(appID) != invertColorsEnabled)
+        _AXSInvertColorsSetEnabledApp(invertColorsEnabled, appID);
+#endif
+#if HAVE(MEDIA_ACCESSIBILITY_FRAMEWORK)
+    WebCore::CaptionUserPreferencesMediaAF::setCachedCaptionDisplayMode(preferences.captionDisplayMode);
+    WebCore::CaptionUserPreferencesMediaAF::setCachedPreferredLanguages(preferences.preferredLanguages);
+#endif
+}
+
 #if PLATFORM(MAC) || PLATFORM(MACCATALYST)
 void WebProcess::colorPreferencesDidChange()
 {
@@ -1074,6 +1152,14 @@ static const WTF::String& userHighlightColorPreferenceKey()
 static const WTF::String& invertColorsPreferenceKey()
 {
     static NeverDestroyed<WTF::String> key(MAKE_STATIC_STRING_IMPL("whiteOnBlack"));
+    return key;
+}
+#endif
+
+#if PLATFORM(IOS_FAMILY)
+static const WTF::String& increaseContrastPreferenceKey()
+{
+    static NeverDestroyed<WTF::String> key(MAKE_STATIC_STRING_IMPL("DarkenSystemColors"));
     return key;
 }
 #endif
@@ -1130,8 +1216,17 @@ static void setPreferenceValue(const String& domain, const String& key, id value
     }
 
     if (domain == String(kAXSAccessibilityPreferenceDomain)) {
+#if HAVE(UPDATE_WEB_ACCESSIBILITY_SETTINGS) && ENABLE(CFPREFS_DIRECT_MODE)
         if (_AXSUpdateWebAccessibilitySettingsPtr())
             _AXSUpdateWebAccessibilitySettingsPtr()();
+#elif PLATFORM(IOS_FAMILY)
+        // If the update method is not available, to update the cache inside AccessibilitySupport,
+        // these methods need to be called directly.
+        if (CFEqual(key.createCFString().get(), kAXSReduceMotionPreference) && [value isKindOfClass:[NSNumber class]])
+            _AXSSetReduceMotionEnabled([(NSNumber *)value boolValue]);
+        else if (CFEqual(key.createCFString().get(), increaseContrastPreferenceKey()) && [value isKindOfClass:[NSNumber class]])
+            _AXSSetDarkenSystemColors([(NSNumber *)value boolValue]);
+#endif
     }
     
 #if USE(APPKIT)
@@ -1306,11 +1401,11 @@ void WebProcess::consumeAudioComponentRegistrations(const IPC::DataReference& da
 
     auto err = AudioComponentApplyServerRegistrations(registrations.get());
     if (noErr != err)
-        RELEASE_LOG_ERROR_IF_ALLOWED(Process, "Could not apply AudioComponent registrations, err(%ld)", static_cast<long>(err));
+        WEBPROCESS_RELEASE_LOG_ERROR(Process, "Could not apply AudioComponent registrations, err(%ld)", static_cast<long>(err));
 }
 
 } // namespace WebKit
 
 #undef RELEASE_LOG_SESSION_ID
-#undef RELEASE_LOG_IF_ALLOWED
-#undef RELEASE_LOG_ERROR_IF_ALLOWED
+#undef WEBPROCESS_RELEASE_LOG
+#undef WEBPROCESS_RELEASE_LOG_ERROR

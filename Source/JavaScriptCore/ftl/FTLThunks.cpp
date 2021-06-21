@@ -76,10 +76,6 @@ static MacroAssemblerCodeRef<JITThunkPtrTag> genericGenerationThunkGenerator(
     char* buffer = static_cast<char*>(scratchBuffer->dataBuffer());
     
     saveAllRegisters(jit, buffer);
-    
-    // Tell GC mark phase how much of the scratch buffer is active during call.
-    jit.move(MacroAssembler::TrustedImmPtr(scratchBuffer->addressOfActiveLength()), GPRInfo::nonArgGPR0);
-    jit.storePtr(MacroAssembler::TrustedImmPtr(requiredScratchMemorySizeInBytes()), GPRInfo::nonArgGPR0);
 
     jit.loadPtr(GPRInfo::callFrameRegister, GPRInfo::argumentGPR0);
     jit.peek(
@@ -94,11 +90,7 @@ static MacroAssemblerCodeRef<JITThunkPtrTag> genericGenerationThunkGenerator(
     // return address "slot" (be it a register or the stack).
     
     jit.move(GPRInfo::returnValueGPR, GPRInfo::regT0);
-    
-    // Make sure we tell the GC that we're not using the scratch buffer anymore.
-    jit.move(MacroAssembler::TrustedImmPtr(scratchBuffer->addressOfActiveLength()), GPRInfo::regT1);
-    jit.storePtr(MacroAssembler::TrustedImmPtr(nullptr), GPRInfo::regT1);
-    
+
     // Prepare for tail call.
     while (numberOfRequiredPops--)
         jit.popToRestore(GPRInfo::regT1);
@@ -200,13 +192,20 @@ MacroAssemblerCodeRef<JITThunkPtrTag> slowPathCallThunkGenerator(VM& vm, const S
         currentOffset += sizeof(double);
     }
     
-    jit.preserveReturnAddressAfterCall(GPRInfo::nonArgGPR0);
-    jit.storePtr(GPRInfo::nonArgGPR0, AssemblyHelpers::Address(MacroAssembler::stackPointerRegister, key.offset()));
+    jit.preserveReturnAddressAfterCall(GPRInfo::nonArgGPR1);
+    jit.storePtr(GPRInfo::nonArgGPR1, AssemblyHelpers::Address(MacroAssembler::stackPointerRegister, key.offset()));
     jit.prepareCallOperation(vm);
     
-    registerClobberCheck(jit, key.argumentRegisters());
+    RegisterSet dontClobber = key.argumentRegisters();
+    if (!key.callTarget())
+        dontClobber.set(GPRInfo::nonArgGPR0);
+    registerClobberCheck(jit, WTFMove(dontClobber));
 
-    AssemblyHelpers::Call call = jit.call(OperationPtrTag);
+    AssemblyHelpers::Call call;
+    if (key.callTarget())
+        call = jit.call(OperationPtrTag);
+    else
+        jit.call(CCallHelpers::Address(GPRInfo::nonArgGPR0, key.indirectOffset()), OperationPtrTag);
 
     jit.loadPtr(AssemblyHelpers::Address(MacroAssembler::stackPointerRegister, key.offset()), GPRInfo::nonPreservedNonReturnGPR);
     jit.restoreReturnAddressBeforeReturn(GPRInfo::nonPreservedNonReturnGPR);
@@ -232,7 +231,8 @@ MacroAssemblerCodeRef<JITThunkPtrTag> slowPathCallThunkGenerator(VM& vm, const S
     jit.ret();
 
     LinkBuffer patchBuffer(jit, GLOBAL_THUNK_ID, LinkBuffer::Profile::FTLThunk);
-    patchBuffer.link(call, key.callTarget());
+    if (key.callTarget())
+        patchBuffer.link(call, key.callTarget());
     return FINALIZE_CODE(patchBuffer, JITThunkPtrTag, "FTL slow path call thunk for %s", toCString(key).data());
 }
 

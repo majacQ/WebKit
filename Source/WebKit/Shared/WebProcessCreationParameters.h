@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include "AccessibilityPreferences.h"
 #include "CacheModel.h"
 #include "SandboxExtension.h"
 #include "TextCheckerState.h"
@@ -205,6 +206,9 @@ struct WebProcessCreationParameters {
     std::optional<SandboxExtension::Handle> containerManagerExtensionHandle;
     std::optional<SandboxExtension::Handle> mobileGestaltExtensionHandle;
     std::optional<SandboxExtension::Handle> launchServicesExtensionHandle;
+#if PLATFORM(MAC) && HAVE(VIDEO_RESTRICTED_DECODING)
+    std::optional<SandboxExtension::Handle> trustdAgentExtensionHandle;
+#endif
 
     SandboxExtension::HandleArray diagnosticsExtensionHandles;
 #if PLATFORM(IOS_FAMILY)
@@ -243,6 +247,8 @@ struct WebProcessCreationParameters {
 #if HAVE(IOSURFACE)
     WebCore::IntSize maximumIOSurfaceSize;
 #endif
+    
+    AccessibilityPreferences accessibilityPreferences;
 };
 
 } // namespace WebKit

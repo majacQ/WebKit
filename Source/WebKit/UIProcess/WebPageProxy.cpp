@@ -1650,6 +1650,14 @@ RefPtr<API::Navigation> WebPageProxy::reload(OptionSet<WebCore::ReloadOption> op
 {
     WEBPAGEPROXY_RELEASE_LOG(Loading, "reload:");
 
+    // Make sure the Network & GPU processes are still responsive. This is so that reload() gets us out of the bad state if one of these
+    // processes is hung.
+    websiteDataStore().networkProcess().checkForResponsiveness();
+#if ENABLE(GPU_PROCESS)
+    if (auto* gpuProcess = process().processPool().gpuProcess())
+        gpuProcess->checkForResponsiveness();
+#endif
+
     SandboxExtension::Handle sandboxExtensionHandle;
 
     String url = currentURL();
@@ -6879,13 +6887,13 @@ void WebPageProxy::contextMenuItemSelected(const WebContextMenuItemData& item)
         TextChecker::toggleSpellingUIIsShowing();
         return;
 
-    case ContextMenuItemTagAddHighlightToNewGroup:
+    case ContextMenuItemTagAddHighlightToNewQuickNote:
 #if ENABLE(APP_HIGHLIGHTS)
         createAppHighlightInSelectedRange(CreateNewGroupForHighlight::Yes, HighlightRequestOriginatedInApp::No);
 #endif
         return;
 
-    case ContextMenuItemTagAddHighlightToCurrentGroup:
+    case ContextMenuItemTagAddHighlightToCurrentQuickNote:
 #if ENABLE(APP_HIGHLIGHTS)
         createAppHighlightInSelectedRange(CreateNewGroupForHighlight::No, HighlightRequestOriginatedInApp::No);
 #endif
@@ -8190,9 +8198,9 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
 #endif
 
 #if ENABLE(ATTACHMENT_ELEMENT) && PLATFORM(COCOA)
-    if (m_preferences->attachmentElementEnabled() && !m_process->hasIssuedAttachmentElementRelatedSandboxExtensions()) {
+    if (m_preferences->attachmentElementEnabled() && !process.hasIssuedAttachmentElementRelatedSandboxExtensions()) {
         parameters.attachmentElementExtensionHandles = SandboxExtension::createHandlesForMachLookup(attachmentElementServices(), std::nullopt);
-        m_process->setHasIssuedAttachmentElementRelatedSandboxExtensions();
+        process.setHasIssuedAttachmentElementRelatedSandboxExtensions();
     }
 #endif
 

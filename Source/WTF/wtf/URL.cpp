@@ -378,7 +378,7 @@ bool URL::setProtocol(StringView newProtocol)
 {
     // Firefox and IE remove everything after the first ':'.
     auto newProtocolPrefix = newProtocol.substring(0, newProtocol.find(':'));
-    auto newProtocolCanonicalized = URLParser::maybeCanonicalizeScheme(newProtocolPrefix.toStringWithoutCopying());
+    auto newProtocolCanonicalized = URLParser::maybeCanonicalizeScheme(newProtocolPrefix);
     if (!newProtocolCanonicalized)
         return false;
 
@@ -402,22 +402,20 @@ bool URL::setProtocol(StringView newProtocol)
 // Return value of false means error in encoding.
 static bool appendEncodedHostname(Vector<UChar, 512>& buffer, StringView string)
 {
-    // Needs to be big enough to hold an IDN-encoded name.
+    // hostnameBuffer needs to be big enough to hold an IDN-encoded name.
     // For host names bigger than this, we won't do IDN encoding, which is almost certainly OK.
-    const unsigned hostnameBufferLength = 2048;
-
-    if (string.length() > hostnameBufferLength || string.isAllASCII()) {
+    if (string.length() > URLParser::hostnameBufferLength || string.isAllASCII()) {
         append(buffer, string);
         return true;
     }
 
-    UChar hostnameBuffer[hostnameBufferLength];
+    UChar hostnameBuffer[URLParser::hostnameBufferLength];
     UErrorCode error = U_ZERO_ERROR;
     UIDNAInfo processingDetails = UIDNA_INFO_INITIALIZER;
     int32_t numCharactersConverted = uidna_nameToASCII(&URLParser::internationalDomainNameTranscoder(),
-        string.upconvertedCharacters(), string.length(), hostnameBuffer, hostnameBufferLength, &processingDetails, &error);
+        string.upconvertedCharacters(), string.length(), hostnameBuffer, URLParser::hostnameBufferLength, &processingDetails, &error);
 
-    if (U_SUCCESS(error) && !processingDetails.errors) {
+    if (U_SUCCESS(error) && !(processingDetails.errors & ~URLParser::allowedNameToASCIIErrors) && numCharactersConverted) {
         buffer.append(hostnameBuffer, numCharactersConverted);
         return true;
     }
@@ -529,9 +527,10 @@ void URL::setHostAndPort(StringView hostAndPort)
     ));
 }
 
-static String percentEncodeCharacters(const String& input, bool(*shouldEncode)(UChar))
+template<typename StringType>
+static String percentEncodeCharacters(const StringType& input, bool(*shouldEncode)(UChar))
 {
-    auto encode = [shouldEncode] (const String& input) {
+    auto encode = [shouldEncode] (const StringType& input) {
         CString utf8 = input.utf8();
         auto* data = utf8.data();
         StringBuilder builder;
@@ -552,7 +551,10 @@ static String percentEncodeCharacters(const String& input, bool(*shouldEncode)(U
         if (UNLIKELY(shouldEncode(input[i])))
             return encode(input);
     }
-    return input;
+    if constexpr (std::is_same_v<StringType, StringView>)
+        return input.toString();
+    else
+        return input;
 }
 
 void URL::parse(const String& string)
@@ -584,7 +586,7 @@ void URL::setUser(StringView newUser)
         parse(makeString(
             StringView(m_string).left(m_userStart),
             slashSlashNeeded ? "//" : "",
-            percentEncodeCharacters(newUser.toStringWithoutCopying(), URLParser::isInUserInfoEncodeSet),
+            percentEncodeCharacters(newUser, URLParser::isInUserInfoEncodeSet),
             needSeparator ? "@" : "",
             StringView(m_string).substring(end)
         ));
@@ -606,7 +608,7 @@ void URL::setPassword(StringView newPassword)
         parse(makeString(
             StringView(m_string).left(m_userEnd),
             needLeadingSlashes ? "//:" : ":",
-            percentEncodeCharacters(newPassword.toStringWithoutCopying(), URLParser::isInUserInfoEncodeSet),
+            percentEncodeCharacters(newPassword, URLParser::isInUserInfoEncodeSet),
             '@',
             StringView(m_string).substring(credentialsEnd())
         ));
@@ -670,7 +672,7 @@ static String escapePathWithoutCopying(StringView path)
     auto questionMarkOrNumberSignOrNonASCII = [] (UChar character) {
         return character == '?' || character == '#' || !isASCII(character);
     };
-    return percentEncodeCharacters(path.toStringWithoutCopying(), questionMarkOrNumberSignOrNonASCII);
+    return percentEncodeCharacters(path, questionMarkOrNumberSignOrNonASCII);
 }
 
 void URL::setPath(StringView path)

@@ -1099,7 +1099,6 @@ public:
     virtual AXCoreObject* observableObject() const = 0;
     virtual void linkedUIElements(AccessibilityChildrenVector&) const = 0;
     virtual AXCoreObject* titleUIElement() const = 0;
-    virtual bool exposesTitleUIElement() const = 0;
     virtual AXCoreObject* correspondingLabelForControlElement() const = 0;
     virtual AXCoreObject* correspondingControlForLabelElement() const = 0;
     virtual AXCoreObject* scrollBar(AccessibilityOrientation) = 0;
@@ -1229,8 +1228,6 @@ public:
     virtual void addChild(AXCoreObject*) = 0;
     virtual void insertChild(AXCoreObject*, unsigned) = 0;
     Vector<AXID> childrenIDs();
-
-    virtual bool shouldIgnoreAttributeRole() const = 0;
 
     virtual bool canHaveChildren() const = 0;
     virtual bool hasChildren() const = 0;

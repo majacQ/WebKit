@@ -110,7 +110,7 @@ public:
     void setVideoInlineSizeFenced(const WebCore::FloatSize&, const WTF::MachSendRight&);
 #endif
 
-    void currentTimeChanged(const MediaTime&, const MonotonicTime&);
+    void currentTimeChanged(const MediaTime&, const MonotonicTime&, bool);
 
     void addRemoteAudioTrack(TrackPrivateRemoteIdentifier, TrackPrivateRemoteConfiguration&&);
     void removeRemoteAudioTrack(TrackPrivateRemoteIdentifier);
@@ -280,6 +280,7 @@ private:
 
     unsigned long long totalBytes() const final;
     bool didLoadingProgress() const final;
+    void didLoadingProgressAsync(WebCore::MediaPlayer::DidLoadingProgressCompletionHandler&&) const final;
 
     void paint(WebCore::GraphicsContext&, const WebCore::FloatRect&) final;
     void paintCurrentFrameInContext(WebCore::GraphicsContext&, const WebCore::FloatRect&) final;
@@ -425,6 +426,7 @@ private:
     MediaTime m_cachedMediaTime;
     MonotonicTime m_cachedMediaTimeQueryTime;
 
+    WebCore::MediaPlayer::VideoGravity m_videoFullscreenGravity { WebCore::MediaPlayer::VideoGravity::ResizeAspect };
     MonotonicTime m_lastPlaybackQualityMetricsQueryTime;
     Seconds m_videoPlaybackMetricsUpdateInterval;
     double m_volume { 1 };
@@ -435,6 +437,7 @@ private:
     bool m_isCurrentPlaybackTargetWireless { false };
     bool m_invalid { false };
     bool m_waitingForKey { false };
+    bool m_timeIsProgressing { false };
 };
 
 } // namespace WebKit

@@ -45,6 +45,7 @@
 #include <WebCore/SoupNetworkSession.h>
 #include <WebCore/SoupVersioning.h>
 #include <WebCore/TextEncoding.h>
+#include <WebCore/TimingAllowOrigin.h>
 #include <wtf/MainThread.h>
 #include <wtf/glib/RunLoopSourcePriority.h>
 
@@ -53,17 +54,18 @@ using namespace WebCore;
 
 static const size_t gDefaultReadBufferSize = 8192;
 
-NetworkDataTaskSoup::NetworkDataTaskSoup(NetworkSession& session, NetworkDataTaskClient& client, const ResourceRequest& requestWithCredentials, FrameIdentifier frameID, PageIdentifier pageID, StoredCredentialsPolicy storedCredentialsPolicy, ContentSniffingPolicy shouldContentSniff, WebCore::ContentEncodingSniffingPolicy, bool shouldClearReferrerOnHTTPSToHTTPRedirect, PreconnectOnly shouldPreconnectOnly, bool dataTaskIsForMainFrameNavigation)
-    : NetworkDataTask(session, client, requestWithCredentials, storedCredentialsPolicy, shouldClearReferrerOnHTTPSToHTTPRedirect, dataTaskIsForMainFrameNavigation)
-    , m_frameID(frameID)
-    , m_pageID(pageID)
-    , m_shouldContentSniff(shouldContentSniff)
-    , m_shouldPreconnectOnly(shouldPreconnectOnly)
+NetworkDataTaskSoup::NetworkDataTaskSoup(NetworkSession& session, NetworkDataTaskClient& client, const NetworkLoadParameters& parameters)
+    : NetworkDataTask(session, client, parameters.request, parameters.storedCredentialsPolicy, parameters.shouldClearReferrerOnHTTPSToHTTPRedirect, parameters.isMainFrameNavigation)
+    , m_frameID(parameters.webFrameID)
+    , m_pageID(parameters.webPageID)
+    , m_shouldContentSniff(parameters.contentSniffingPolicy)
+    , m_shouldPreconnectOnly(parameters.shouldPreconnectOnly)
+    , m_sourceOrigin(parameters.sourceOrigin)
     , m_timeoutSource(RunLoop::main(), this, &NetworkDataTaskSoup::timeoutFired)
 {
     m_session->registerNetworkDataTask(*this);
 
-    auto request = requestWithCredentials;
+    auto request = parameters.request;
     if (request.url().protocolIsInHTTPFamily()) {
 #if USE(SOUP2)
         m_networkLoadMetrics.fetchStart = MonotonicTime::now();
@@ -231,10 +233,10 @@ void NetworkDataTaskSoup::createRequest(ResourceRequest&& request, WasBlockingCo
 #else
     g_signal_connect(m_soupMessage.get(), "authenticate", G_CALLBACK(authenticateCallback), this);
     g_signal_connect(m_soupMessage.get(), "accept-certificate", G_CALLBACK(acceptCertificateCallback), this);
+    g_signal_connect(m_soupMessage.get(), "got-body", G_CALLBACK(gotBodyCallback), this);
     if (shouldCaptureExtraNetworkLoadMetrics()) {
         g_signal_connect(m_soupMessage.get(), "wrote-headers", G_CALLBACK(wroteHeadersCallback), this);
         g_signal_connect(m_soupMessage.get(), "wrote-body", G_CALLBACK(wroteBodyCallback), this);
-        g_signal_connect(m_soupMessage.get(), "got-body", G_CALLBACK(gotBodyCallback), this);
     }
 #endif
     g_signal_connect(m_soupMessage.get(), "restarted", G_CALLBACK(restartedCallback), this);
@@ -327,6 +329,7 @@ void NetworkDataTaskSoup::resume()
     }
 
     if (m_file && !m_cancellable) {
+        m_networkLoadMetrics.fetchStart = MonotonicTime::now();
         m_cancellable = adoptGRef(g_cancellable_new());
         g_file_query_info_async(m_file.get(), G_FILE_ATTRIBUTE_STANDARD_TYPE "," G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE "," G_FILE_ATTRIBUTE_STANDARD_SIZE,
             G_FILE_QUERY_INFO_NONE, RunLoopSourcePriority::AsyncIONetwork, m_cancellable.get(), reinterpret_cast<GAsyncReadyCallback>(fileQueryInfoCallback), protectedThis.leakRef());
@@ -334,6 +337,7 @@ void NetworkDataTaskSoup::resume()
     }
 
     if (m_currentRequest.url().protocolIsData() && !m_cancellable) {
+        m_networkLoadMetrics.fetchStart = MonotonicTime::now();
         m_cancellable = adoptGRef(g_cancellable_new());
         DataURLDecoder::decode(m_currentRequest.url(), { }, DataURLDecoder::Mode::Legacy, [this, protectedThis = WTFMove(protectedThis)](auto decodeResult) mutable {
             if (m_state == State::Canceling || m_state == State::Completed || !m_client) {
@@ -481,14 +485,21 @@ void NetworkDataTaskSoup::didSendRequest(GRefPtr<GInputStream>&& inputStream)
     m_networkLoadMetrics.responseStart = MonotonicTime::now();
 #endif
 
-    // FIXME: This cannot be eliminated until other code no longer relies on ResourceResponse's NetworkLoadMetrics.
-    m_response.setDeprecatedNetworkLoadMetrics(Box<NetworkLoadMetrics>::create(m_networkLoadMetrics));
+    if (!m_networkLoadMetrics.failsTAOCheck) {
+        RefPtr<SecurityOrigin> origin = isTopLevelNavigation() ? SecurityOrigin::create(firstRequest().url()) : m_sourceOrigin;
+        if (origin)
+            m_networkLoadMetrics.failsTAOCheck = !passesTimingAllowOriginCheck(m_response, *origin);
+    }
+
     dispatchDidReceiveResponse();
 }
 
 void NetworkDataTaskSoup::dispatchDidReceiveResponse()
 {
     ASSERT(!m_response.isNull());
+
+    // FIXME: This cannot be eliminated until other code no longer relies on ResourceResponse's NetworkLoadMetrics.
+    m_response.setDeprecatedNetworkLoadMetrics(Box<NetworkLoadMetrics>::create(m_networkLoadMetrics));
 
     didReceiveResponse(ResourceResponse(m_response), NegotiatedLegacyTLS::No, [this, protectedThis = makeRef(*this)](PolicyAction policyAction) {
         if (m_state == State::Canceling || m_state == State::Completed) {
@@ -861,8 +872,7 @@ void NetworkDataTaskSoup::continueHTTPRedirection()
         redirectedURL.setFragmentIdentifier(request.url().fragmentIdentifier());
     request.setURL(redirectedURL);
 
-    // Check if the redirected url is allowed to access the redirecting url's timing information.
-    m_networkLoadMetrics.hasCrossOriginRedirect = !SecurityOrigin::create(m_currentRequest.url())->canRequest(request.url());
+    m_networkLoadMetrics.hasCrossOriginRedirect = m_networkLoadMetrics.hasCrossOriginRedirect || !SecurityOrigin::create(m_currentRequest.url())->canRequest(request.url());
 
     // Clear the user agent to ensure a new one is computed.
     auto userAgent = request.httpUserAgent();
@@ -1174,7 +1184,7 @@ void NetworkDataTaskSoup::wroteBodyCallback(SoupMessage* soupMessage, NetworkDat
 
 void NetworkDataTaskSoup::gotBodyCallback(SoupMessage* soupMessage, NetworkDataTaskSoup* task)
 {
-    if (task->state() == State::Canceling || task->state() == State::Completed || !task->m_client) {
+    if (task->state() == State::Canceling || task->state() == State::Completed || (!task->m_client && !task->isDownload())) {
         task->clearRequest();
         return;
     }

@@ -36,13 +36,13 @@ class ImageBufferCGBitmapBackend : public ImageBufferCGBackend {
     WTF_MAKE_ISO_ALLOCATED(ImageBufferCGBitmapBackend);
     WTF_MAKE_NONCOPYABLE(ImageBufferCGBitmapBackend);
 public:
-    static IntSize calculateSafeBackendSize(const Parameters&);
-    static size_t calculateMemoryCost(const Parameters&);
+    WEBCORE_EXPORT static IntSize calculateSafeBackendSize(const Parameters&);
+    WEBCORE_EXPORT static size_t calculateMemoryCost(const Parameters&);
 
-    static std::unique_ptr<ImageBufferCGBitmapBackend> create(const Parameters&, const HostWindow*);
+    WEBCORE_EXPORT static std::unique_ptr<ImageBufferCGBitmapBackend> create(const Parameters&, const HostWindow*);
 
     // FIXME: Rename to createUsingColorSpaceOfGraphicsContext() (or something like that).
-    static std::unique_ptr<ImageBufferCGBitmapBackend> create(const Parameters&, const GraphicsContext&);
+    WEBCORE_EXPORT static std::unique_ptr<ImageBufferCGBitmapBackend> create(const Parameters&, const GraphicsContext&);
 
     GraphicsContext& context() const override;
 
@@ -52,8 +52,6 @@ public:
 
     std::optional<PixelBuffer> getPixelBuffer(const PixelBufferFormat& outputFormat, const IntRect&) const override;
     void putPixelBuffer(const PixelBuffer&, const IntRect& srcRect, const IntPoint& destPoint, AlphaPremultiplication destFormat) override;
-
-    static constexpr bool isOriginAtUpperLeftCorner = true;
 
 private:
     ImageBufferCGBitmapBackend(const Parameters&, void* data, RetainPtr<CGDataProviderRef>&&, std::unique_ptr<GraphicsContext>&&);

@@ -28,8 +28,8 @@
 #import "components/video_frame_buffer/RTCCVPixelBuffer.h"
 #import "helpers.h"
 
+#include "api/video_codecs/h264_profile_level_id.h"
 #include "common_video/h264/h264_bitstream_parser.h"
-#include "common_video/h264/profile_level_id.h"
 #include "common_video/include/bitrate_adjuster.h"
 #include "modules/include/module_common_types.h"
 #include "modules/video_coding/include/video_error_codes.h"
@@ -769,7 +769,27 @@ NSUInteger GetMaxSampleRate(const webrtc::H264::ProfileLevelId &profile_level_id
   CFBooleanRef hwaccl_enabled = nullptr;
   if (status == noErr) {
     auto result = VTSessionCopyProperty(_vtCompressionSession, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, nullptr, &hwaccl_enabled);
-    _isUsingSoftwareEncoder = result == noErr ? !CFBooleanGetValue(hwaccl_enabled) : _width <= 480 && _height <= 480;
+    _isUsingSoftwareEncoder = result == noErr ? !CFBooleanGetValue(hwaccl_enabled) : true;
+#if HAVE_VTB_REQUIREDLOWLATENCY
+    if (_isUsingSoftwareEncoder && _isH264LowLatencyEncoderEnabled && _vtCompressionSession && !_useVCP) {
+      VTCompressionSessionInvalidate(_vtCompressionSession);
+      CFRelease(_vtCompressionSession);
+      _vtCompressionSession = nullptr;
+
+      CFDictionarySetValue(encoderSpecs, kVTVideoEncoderSpecification_RequiredLowLatency, kCFBooleanTrue);
+      CFDictionarySetValue(encoderSpecs, kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder, kCFBooleanFalse);
+      status = VTCompressionSessionCreate(nullptr,  // use default allocator
+                                       _width,
+                                       _height,
+                                       kCMVideoCodecType_H264,
+                                       encoderSpecs,  // use hardware accelerated encoder if available
+                                       sourceAttributes,
+                                       nullptr,  // use default compressed data allocator
+                                       compressionOutputCallback,
+                                       nullptr,
+                                       &_vtCompressionSession);
+    }
+#endif
   }
 #else
   // Provided encoder should be good enough.
@@ -983,10 +1003,9 @@ NSUInteger GetMaxSampleRate(const webrtc::H264::ProfileLevelId &profile_level_id
                                                                   RTCVideoContentTypeUnspecified;
   frame.flags = webrtc::VideoSendTiming::kInvalid;
 
-  int qp;
-  _h264BitstreamParser.ParseBitstream(buffer->data(), buffer->size());
-  _h264BitstreamParser.GetLastSliceQp(&qp);
-  frame.qp = @(qp);
+  _h264BitstreamParser.ParseBitstream(*buffer);
+  auto qp = _h264BitstreamParser.GetLastSliceQp();
+  frame.qp = @(qp.value_or(0));
 
   BOOL res = _callback(frame, codecSpecificInfo, nullptr);
   if (!res) {

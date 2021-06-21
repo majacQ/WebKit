@@ -165,6 +165,10 @@ void WebProcessCreationParameters::encode(IPC::Encoder& encoder) const
     encoder << mobileGestaltExtensionHandle;
     encoder << launchServicesExtensionHandle;
 
+#if PLATFORM(MAC) && HAVE(VIDEO_RESTRICTED_DECODING)
+    encoder << trustdAgentExtensionHandle;
+#endif
+
     encoder << diagnosticsExtensionHandles;
 #if PLATFORM(IOS_FAMILY)
     encoder << dynamicMachExtensionHandles;
@@ -202,6 +206,8 @@ void WebProcessCreationParameters::encode(IPC::Encoder& encoder) const
 #if HAVE(IOSURFACE)
     encoder << maximumIOSurfaceSize;
 #endif
+
+    encoder << accessibilityPreferences;
 }
 
 bool WebProcessCreationParameters::decode(IPC::Decoder& decoder, WebProcessCreationParameters& parameters)
@@ -458,6 +464,14 @@ bool WebProcessCreationParameters::decode(IPC::Decoder& decoder, WebProcessCreat
         return false;
     parameters.launchServicesExtensionHandle = WTFMove(*launchServicesExtensionHandle);
 
+#if PLATFORM(MAC) && HAVE(VIDEO_RESTRICTED_DECODING)
+    std::optional<std::optional<SandboxExtension::Handle>> trustdAgentExtensionHandle;
+    decoder >> trustdAgentExtensionHandle;
+    if (!trustdAgentExtensionHandle)
+        return false;
+    parameters.trustdAgentExtensionHandle = WTFMove(*trustdAgentExtensionHandle);
+#endif
+
     std::optional<SandboxExtension::HandleArray> diagnosticsExtensionHandles;
     decoder >> diagnosticsExtensionHandles;
     if (!diagnosticsExtensionHandles)
@@ -548,6 +562,12 @@ bool WebProcessCreationParameters::decode(IPC::Decoder& decoder, WebProcessCreat
     if (!decoder.decode(parameters.maximumIOSurfaceSize))
         return false;
 #endif
+
+    std::optional<AccessibilityPreferences> accessibilityPreferences;
+    decoder >> accessibilityPreferences;
+    if (!accessibilityPreferences)
+        return false;
+    parameters.accessibilityPreferences = WTFMove(*accessibilityPreferences);
 
     return true;
 }

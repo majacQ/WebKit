@@ -1,3 +1,544 @@
+2021-06-21  Philippe Normand  <pnormand@igalia.com>
+
+        Unreviewed build fix after r279062
+
+        * wtf/Span.h:
+        (std::is_convertible_v<std::remove_pointer_t<decltype):
+
+2021-06-20  Sam Weinig  <weinig@apple.com>
+
+        Replace Span implementation with one from libc++, which is more spec complient
+        https://bugs.webkit.org/show_bug.cgi?id=227197
+
+        Reviewed by Darin Adler.
+
+        * wtf/Span.h:
+        The tcb span implementation had some SFINAE issues when converting containers
+        had data() and size() member functions but were not span compatible that were
+        causing failures. Rather than trying to fix those, this adopts a modified version
+        of the libc++ span implementation which is more up-to-date.
+
+        To fix MSVC compile issues, the as_bytes/as_writable_bytes functions have been
+        re-implemented to not work around a compile issue seen where using the dynamic_extent
+        specicialization from the static extent specicialization was failing to compile.
+
+2021-06-20  Wenson Hsieh  <wenson_hsieh@apple.com>
+
+        [macOS] Rename WKVisualSearchPreviewController to WKQuickLookPreviewController
+        https://bugs.webkit.org/show_bug.cgi?id=227193
+
+        Reviewed by Sam Weinig.
+
+        Add some compile-time flags to guard QuickLook SPI declarations.
+
+        * wtf/PlatformHave.h:
+
+2021-06-20  Sam Weinig  <weinig@apple.com>
+
+        Adopt Span in SHA1.h
+        https://bugs.webkit.org/show_bug.cgi?id=227184
+
+        Reviewed by Chris Dumez.
+
+        Replaces overload of addBytes taking a Vector with ones taking
+        a Span and add overloads for Span<const std::byte> which all the
+        others are now implemented in terms of. This is useful since
+        any Span can be turned into one of type Span<const std::byte>
+        just by calling asBytes(existingSpan).
+
+        This leaves most of the existing overloads in place (though
+        simplifies them by implementing them as Span contructions),
+        though we should consider removing some in a separate pass.
+
+        * wtf/SHA1.cpp:
+        * wtf/SHA1.h:
+
+2021-06-19  Sam Weinig  <weinig@apple.com>
+
+        Adopt Span in Base64.h
+        https://bugs.webkit.org/show_bug.cgi?id=227132
+
+        Reviewed by Chris Dumez.
+
+        Replaces overloads taking Vectors with ones taking Spans
+        and add overloads for Span<const std::byte> which all the
+        others are now implemented in terms of. This is useful since
+        any Span can be turned into one of type Span<const std::byte>
+        just by calling asBytes(existingSpan).
+
+        This leaves most of the existing overloads in place (though
+        simplifies them by implementing them as Span contructions)
+        though we should consider removing some in a separate pass.
+
+        * wtf/Vector.h:
+        Add value_type typedef so that Vector<T> can be automatically
+        deduced as Span<T>.
+
+        * wtf/text/CString.h:
+        Add bytes() and bytesInludingNullTerminator() (only the former
+        is used in this patch, but the later will be needed shortly)
+        which return Span<const uint8_t> of the CString. I chose to use
+        an explicit function, rather than making it converible to Span
+        like Vector, because some callers will want the null terminator
+        and some will not.
+
+        * wtf/text/Base64.cpp:
+        * wtf/text/Base64.h:
+        Canonicalize all input buffers either as a Span<const std::byte> or
+        a StringView, making all the other overloads just forward to one of
+        those two (String -> StringView, everything else -> Span<const std::byte>).
+
+        Clean up the header a bit by putting all the declarations at the top of
+        the file.
+
+2021-06-17  Said Abou-Hallawa  <said@apple.com>
+
+        [Cocoa] Disable hardware decoding in the WebProcess
+        https://bugs.webkit.org/show_bug.cgi?id=226869
+        <rdar://77548905>
+
+        Reviewed by Per Arne Vollan and Simon Fraser.
+
+        Add have macros for using:
+        1. kCGImageSourceEnableRestrictedDecoding
+        2. VTRestrictVideoDecoders()
+
+        * wtf/PlatformHave.h:
+
+2021-06-17  Mark Lam  <mark.lam@apple.com>
+
+        Rename numberOfPACBits to maxNumberOfAllowedPACBits.
+        https://bugs.webkit.org/show_bug.cgi?id=227156
+
+        Reviewed by Saam Barati.
+
+        * wtf/CagedPtr.h:
+
+2021-06-17  Mark Lam  <mark.lam@apple.com>
+
+        Define MacroAssemblerARM64E::numberOfPACBits based on OS_CONSTANT(EFFECTIVE_ADDRESS_WIDTH).
+        https://bugs.webkit.org/show_bug.cgi?id=227147
+        rdar://78785309
+
+        Reviewed by Saam Barati.
+
+        For OS(DARWIN), define OS_CONSTANT(EFFECTIVE_ADDRESS_WIDTH) in terms of
+        MACH_VM_MAX_ADDRESS, which is provided by the SDK.  This ensures that it is
+        correct for each target OS(DARWIN) platform.
+
+        Also update an assertion in WTFAssertions.cpp to verify that address bits are
+        less than 48.  The purpose of this assertion is to ensure that our 64-bit NaN
+        boxing encoding for JSValues will work.  Hence, we should use the encoding limit
+        for pointers of 48 bits.  It no longer makes sense to assert based on
+        OS_CONSTANT(EFFECTIVE_ADDRESS_WIDTH), because OS_CONSTANT(EFFECTIVE_ADDRESS_WIDTH)
+        is defined in terms of MACH_VM_MAX_ADDRESS.
+
+        * wtf/CagedPtr.h:
+        * wtf/CompactPointerTuple.h:
+        * wtf/PlatformOS.h:
+        * wtf/WTFAssertions.cpp:
+        * wtf/threads/Signals.cpp:
+
+2021-06-17  Fujii Hironori  <Hironori.Fujii@sony.com>
+
+        [Win] WTF.ParseInteger and WTF.ParseIntegerAllowingTrailingJunk are failing
+        https://bugs.webkit.org/show_bug.cgi?id=227090
+
+        Reviewed by Yusuke Suzuki.
+
+        ArithmeticOperations::sub unexpectedly reported an overflow for
+        the result of std::numeric_limits<ResultType>::min() in MSVC code path.
+        For example, Checked<int, RecordOverflow>(INT_MIN + 1) - 1 was reported an overflow.
+
+        In the case of calculating (lhs - rhs), and lhs < 0 and rhs > 0,
+        the original code reported an overflow if (rhs > max() + lhs).
+        Mathematically, this condition checks (lhs - rhs < -max()).
+        It should use min() instead of max() in this case. It should be
+        (lhs - rhs < min()) mathematically.
+
+        * wtf/CheckedArithmetic.h:
+
+2021-06-17  Alex Christensen  <achristensen@webkit.org>
+
+        Add assertion in RunLoop::dispatch
+        https://bugs.webkit.org/show_bug.cgi?id=227154
+        <rdar://79243769>
+
+        Reviewed by Geoff Garen.
+
+        This should help us find what is scheduling null functions.
+
+        * wtf/RunLoop.cpp:
+        (WTF::RunLoop::dispatch):
+        (WTF::RunLoop::dispatchAfter):
+
+2021-06-17  Ben Nham  <nham@apple.com>
+
+        Remove Mac-specific CPUTime functions
+        https://bugs.webkit.org/show_bug.cgi?id=227109
+
+        Reviewed by Yusuke Suzuki.
+
+        There's no reason for the Mac-specific CPU time functions to exist, since getrusage and
+        clock_gettime work fine on Mac. It's actually slightly more efficient to use the POSIX calls
+        since getrusage returns CPU time for both current and terminated threads in a single
+        syscall, while using task_info requires two syscalls to do the same thing.
+
+        * WTF.xcodeproj/project.pbxproj:
+        * wtf/PlatformGTK.cmake:
+        * wtf/PlatformJSCOnly.cmake:
+        * wtf/PlatformPlayStation.cmake:
+        * wtf/PlatformWPE.cmake:
+        * wtf/cocoa/CPUTimeCocoa.cpp: Removed.
+        * wtf/posix/CPUTimePOSIX.cpp: Renamed from Source/WTF/wtf/unix/CPUTimeUnix.cpp.
+
+2021-06-17  Tim Horton  <timothy_horton@apple.com>
+
+        Adopt WKHoverGestureRecognizer
+        https://bugs.webkit.org/show_bug.cgi?id=227116
+        <rdar://79442027>
+
+        Reviewed by Wenson Hsieh.
+
+        * wtf/PlatformEnableCocoa.h:
+
+2021-06-16  Yusuke Suzuki  <ysuzuki@apple.com>
+
+        [JSC] Disable JITCage on macOS until we evaluate performance throughly
+        https://bugs.webkit.org/show_bug.cgi?id=227104
+
+        Reviewed by Mark Lam.
+
+        This patch disables JITCage on macOS until we evaluate performance throughly.
+
+        * wtf/PlatformEnable.h:
+
+2021-06-16  Alicia Boya García  <aboya@igalia.com>
+
+        [WTF] DataMutex: Assert on double locking on the same thread
+        https://bugs.webkit.org/show_bug.cgi?id=227069
+
+        Reviewed by Xabier Rodriguez-Calvar.
+
+        DataMutex used to use OwnerAwareLock to track what thread is holding
+        the mutex and emit assertion errors if a thread is found attempting to
+        lock a mutex held by that same thread. This turns deadlocks into
+        runtime errors.
+
+        OwnerAwareLock was removed when DataMutex got clang thread safety
+        annotations. This patch reintroduces the same logic, while keeping
+        thread-safety annotations.
+
+        This fixes WTF_DataMutex.DoubleLockDeathTest, which tested this
+        functionality and was previously regressed.
+
+        * wtf/DataMutex.h:
+
+2021-06-06  Darin Adler  <darin@apple.com>
+
+        Delete some recently-obsoleted files
+        https://bugs.webkit.org/show_bug.cgi?id=226705
+
+        Reviewed by Chris Dumez.
+
+        * wtf/CMakeLists.txt: Removed Optional.h.
+        * wtf/Optional.h: Removed.
+
+2021-06-15  Alex Christensen  <achristensen@webkit.org>
+
+        Check for "xn--" in any subdomain when parsing URL hosts
+        https://bugs.webkit.org/show_bug.cgi?id=226912
+
+        Reviewed by Darin Adler.
+
+        We have a fast path that doesn't call uidna_nameToASCII if the host is already ASCII.
+        We need to check if the host is properly-punycode-encoded if it starts with "xn--"
+        but we also need to check if any subdomain starts with "xn--" (not just the first one).
+
+        In order to not regress tests, I needed to also take the fix I did in r256629 and apply it to all use of uidna_nameToASCII.
+
+        * wtf/URL.cpp:
+        (WTF::appendEncodedHostname):
+        * wtf/URLHelpers.cpp:
+        (WTF::URLHelpers::mapHostName):
+        * wtf/URLParser.cpp:
+        (WTF::URLParser::domainToASCII):
+        (WTF::URLParser::subdomainStartsWithXNDashDash):
+        (WTF::URLParser::parseHostAndPort):
+        (WTF::URLParser::startsWithXNDashDash): Deleted.
+        * wtf/URLParser.h:
+
+2021-06-15  Michael Catanzaro  <mcatanzaro@gnome.org>
+
+        -Warray-bounds warning in Packed.h
+        https://bugs.webkit.org/show_bug.cgi?id=226557
+        <rdar://problem/79103658>
+
+        Reviewed by Darin Adler.
+
+        * wtf/Bitmap.h:
+        (WTF::WordType>::clear): Use the newly-introduced IGNORE_ARRAY_BOUNDS_WARNINGS macros
+        instead of vanilla IGNORE_WARNINGS.
+        * wtf/Compiler.h: Add new IGNORE_ARRAY_BOUNDS_WARNINGS_[BEGIN,END] macros, since this
+        warning is now suppressed in several different places.
+        * wtf/Packed.h: Suppress the warning. Also, add a static_assert for safety.
+
+2021-06-15  Brent Fulgham  <bfulgham@apple.com>
+
+        [Cocoa] Harden WebAuthn process by restricting to browser-entitled processes
+        https://bugs.webkit.org/show_bug.cgi?id=226772
+        <rdar://problem/74721877>
+
+        Reviewed by Darin Adler.
+
+        Add a new entitlement utility that returns the String value of a given entitlement for
+        the process with the provided audit token.
+
+        * wtf/cocoa/Entitlements.h:
+        * wtf/cocoa/Entitlements.mm:
+        (WTF::hasEntitlementValue):
+        * wtf/PlatformHave.h: Add item for PAC shared region feature.
+
+2021-06-14  Per Arne  <pvollan@apple.com>
+
+        [iOS] Sync Accessibility preferences
+        https://bugs.webkit.org/show_bug.cgi?id=226738
+        <rdar://77922839>
+
+        Reviewed by Brent Fulgham.
+
+        Enable Per-App Accessibility preferences on iOS.
+
+        * wtf/PlatformHave.h:
+
+2021-06-12  Wenson Hsieh  <wenson_hsieh@apple.com>
+
+        Number pad button is missing its image when tapping on <input type=tel> in watchOS 8
+        https://bugs.webkit.org/show_bug.cgi?id=226955
+
+        Reviewed by Darin Adler.
+
+        Add compile-time flags to guard the presence of `PUICQuickboardController` and `PUICButtonTypePill`.
+
+        * wtf/PlatformHave.h:
+
+2021-06-11  Ryosuke Niwa  <rniwa@webkit.org>
+
+        Add WeakHashMap
+        https://bugs.webkit.org/show_bug.cgi?id=226872
+
+        Reviewed by Geoffrey Garen.
+
+        Added WeakHashMap which deletes entries during rehashing and amortized over time (based on
+        the number of read & write accesses done on a given WeakHashMap instance).
+
+        * WTF.xcodeproj/project.pbxproj:
+        * wtf/CMakeLists.txt:
+        * wtf/WeakHashMap.h: Added.
+        (WTF::WeakHashMap): Added.
+        (WTF::WeakHashMap::PeekKeyValuePairTraits): Added.
+        (WTF::WeakHashMap::PeekType): Added.
+        (WTF::WeakHashMap::PeekPtrType): Added. Unlike a regular HashMap, we need to fake the iterator
+        pointer value with this struct since key-value pair doesn't exist in HashTable itself as it stores
+        Ref<WeakRefImpl> instead.
+        (WTF::WeakHashMap::WeakHashMapIteratorBase): Added. Has a bunch of helper functions so that
+        WeakHashMapIterator and WeakHashMapConstIterator can share the code.
+        (WTF::WeakHashMap::WeakHashMapIterator): Added.
+        (WTF::WeakHashMap::WeakHashMapConstIterator): Added.
+        (WTF::WeakHashMap::AddResult): Added.
+        (WTF::WeakHashMap::begin): Added.
+        (WTF::WeakHashMap::end): Added.
+        (WTF::WeakHashMap::add): Added.
+        (WTF::WeakHashMap::set): Added.
+        (WTF::WeakHashMap::find): Added.
+        (WTF::WeakHashMap::contains): Added.
+        (WTF::WeakHashMap::get): Added.
+        (WTF::WeakHashMap::remove): Added.
+        (WTF::WeakHashMap::removeIf): Added.
+        (WTF::WeakHashMap::clear): Added.
+        (WTF::WeakHashMap::capacity): Added.
+        (WTF::WeakHashMap::isEmptyIgnoringNullReferences): Added. This is akin to WeakHashSet::computesEmpty.
+        Per prior discussion, we intend to rename WeakHashSet's version to this name as well for clarity.
+        Note that this function will clear the hash table completely if the map is semantically empty
+        but HashTable contains null references as keys.
+        (WTF::WeakHashMap::hasNullReferences): Added. Triggers amortized cleanup based on the number
+        of iterations performed. If there are no null references, it resets m_operationCountSinceLastCleanup.
+        (WTF::WeakHashMap::computeSize): Added.
+        (WTF::WeakHashMap::removeNullReferences): Added. Since WeakHashMap doesn't eagerly delete the value
+        when the key goes away, this function should be called when values held onto by WeakRefImpl with
+        the nullptr back pointer should be deleted en masse.
+        (WTF::WeakHashMap::checkConsistency): Added.
+        (WTF::WeakHashMap::makeKeyImpl): Added.
+        (WTF::WeakHashMap::keyImplIfExists): Added.
+        * wtf/WeakPtr.h:
+
+2021-06-11  Jonathan Bedard  <jbedard@apple.com>
+
+        [Monterey] Support building WebKit
+        https://bugs.webkit.org/show_bug.cgi?id=226846
+        <rdar://problem/79095148>
+
+        Reviewed by Tim Horton.
+
+        * wtf/PlatformHave.h: Add HAVE(VK_IMAGE_ANALYSIS).
+        * wtf/spi/cocoa/SecuritySPI.h:
+
+2021-06-09  Chris Dumez  <cdumez@apple.com>
+
+        Avoid some calls to StringView::toString() / StringView::toStringWithoutCopying()
+        https://bugs.webkit.org/show_bug.cgi?id=226803
+
+        Reviewed by Darin Adler.
+
+        Add support to TextStream for printing a StringView directly, without having to convert
+        it to a String first.
+
+        * wtf/text/TextStream.cpp:
+        (WTF::TextStream::operator<<):
+        * wtf/text/TextStream.h:
+
+2021-06-09  Alicia Boya García  <aboya@igalia.com>
+
+        [WTF][GStreamer] Add RAII lockers for 3rd party locks
+        https://bugs.webkit.org/show_bug.cgi?id=225650
+
+        Reviewed by Xabier Rodriguez-Calvar.
+
+        This patch introduces WTF::ExternalLocker, which allows to lock 3rd
+        party mutexes in a RAII fashion, very similar to WTF::Locker.
+
+        This is used also in WebCore to provide RAII lockers for GStreamer.
+
+        * wtf/Locker.h:
+        (WTF::unlockFunction):
+
+2021-06-08  Alex Christensen  <achristensen@webkit.org>
+
+        Move PrivacyStance code from WebKitAdditions
+        https://bugs.webkit.org/show_bug.cgi?id=226774
+
+        Reviewed by Jer Noble.
+
+        * wtf/PlatformHave.h:
+
+2021-06-08  Ben Nham  <nham@apple.com>
+
+        Use access instead of stat in some filesystem functions
+        https://bugs.webkit.org/show_bug.cgi?id=226667
+
+        Reviewed by Chris Dumez.
+
+        We are spending a bit more time in WTF::FileSystemImpl functions after the move to
+        std::filesystem (https://bugs.webkit.org/show_bug.cgi?id=225255). In particular, several
+        std::filesystem functions (like the ones called by fileExists and makeAllDirectories) prefer
+        to use stat() over access() for file existence checks. Since our sandbox has a fast path for
+        access(path, F_OK) but not for stat, we ended up spending more time in sandbox evaluation in
+        the kernel after the move to std::filesystem.
+
+        Note that the two checks don't do exactly the same thing. access(path, F_OK) only checks for
+        path existence, while stat(path) additionally fetches metadata, which requires checking the
+        file-read-metadata permission. But in practice our code was written to be fine with just
+        checking for existence.
+
+        To work around this, I've re-introduced some of the old WTF::FileSystemImpl functions from
+        FileSystemPosix.cpp. They are the ones that are called by NetworkCache, which seems to be
+        the biggest consumer of these functions. The rest of the functions are still implemented
+        using std::filesystem.
+
+        * wtf/FileSystem.cpp:
+        (WTF::FileSystemImpl::fileExists):
+        (WTF::FileSystemImpl::deleteFile):
+        (WTF::FileSystemImpl::makeAllDirectories):
+        (WTF::FileSystemImpl::pathByAppendingComponent):
+        (WTF::FileSystemImpl::pathByAppendingComponents):
+        * wtf/PlatformEnableCocoa.h:
+        * wtf/posix/FileSystemPOSIX.cpp:
+        (WTF::FileSystemImpl::fileExists):
+        (WTF::FileSystemImpl::deleteFile):
+        (WTF::FileSystemImpl::makeAllDirectories):
+        (WTF::FileSystemImpl::pathByAppendingComponent):
+        (WTF::FileSystemImpl::pathByAppendingComponents):
+
+2021-06-08  Devin Rousso  <drousso@apple.com>
+
+        [Payment Request] upstream new features
+        https://bugs.webkit.org/show_bug.cgi?id=226740
+        <rdar://problem/78963132>
+
+        Reviewed by Andy Estes.
+
+         - recurring line items (`HAVE_PASSKIT_RECURRING_SUMMARY_ITEM` and `ENABLE_APPLE_PAY_RECURRING_LINE_ITEM`)
+         - deferred line items (`HAVE_PASSKIT_DEFERRED_SUMMARY_ITEM` and `ENABLE_APPLE_PAY_DEFERRED_LINE_ITEM`)
+         - estimated shipping dates (`HAVE_PASSKIT_SHIPPING_METHOD_DATE_COMPONENTS_RANGE` and `ENABLE_APPLE_PAY_SHIPPING_METHOD_DATE_COMPONENTS_RANGE`)
+         - coupon code entry (`HAVE_PASSKIT_COUPON_CODE` and `ENABLE_APPLE_PAY_COUPON_CODE`)
+         - shipped vs in-store pickup (`HAVE_PASSKIT_SHIPPING_CONTACT_EDITING_MODE` and `ENABLE_APPLE_PAY_SHIPPING_CONTACT_EDITING_MODE`)
+
+        * wtf/PlatformHave.h:
+        * wtf/PlatformEnableCocoa.h:
+
+2021-06-08  Chris Dumez  <cdumez@apple.com>
+
+        Reduce use of reinterpret_cast<> in the codebase
+        https://bugs.webkit.org/show_bug.cgi?id=226743
+
+        Reviewed by Darin Adler.
+
+        * wtf/CryptographicallyRandomNumber.cpp:
+        * wtf/FastMalloc.h:
+        (WTF::FastAllocator::allocate):
+        * wtf/SHA1.h:
+        (WTF::SHA1::addBytes):
+        * wtf/StackCheck.h:
+        (WTF::StackCheck::Scope::Scope):
+        (WTF::StackCheck::StackCheck):
+        * wtf/URLHelpers.cpp:
+        (WTF::URLHelpers::userVisibleURL):
+        * wtf/URLParser.cpp:
+        (WTF::URLParser::formURLDecode):
+        * wtf/cf/URLCF.cpp:
+        (WTF::URL::createCFURL const):
+        * wtf/cocoa/URLCocoa.mm:
+        (WTF::URL::createCFURL const):
+        * wtf/persistence/PersistentCoders.cpp:
+        (WTF::Persistence::Coder<CString>::encode):
+        (WTF::Persistence::Coder<String>::encode):
+        * wtf/text/CString.h:
+        * wtf/text/WTFString.cpp:
+        (WTF::String::latin1 const):
+        * wtf/text/cf/StringImplCF.cpp:
+        (WTF::StringImpl::createCFString):
+
+2021-06-08  Devin Rousso  <drousso@apple.com>
+
+        [Modern Media Controls] upstream new features
+        https://bugs.webkit.org/show_bug.cgi?id=226736
+        <rdar://problem/78957464>
+
+        Reviewed by Eric Carlson.
+
+         - bring the "Audio"/"Languages" tracks menu to iOS
+         - add a new "Playback Speed" menu on iOS and macOS in the overflow menu
+         - add support for showing the most relevant `<track kind="chapters">` in the overflow menu
+
+        * wtf/PlatformEnableCocoa.h:
+
+2021-06-08  Sam Weinig  <weinig@apple.com>
+
+        Add copy of std::span so that we can use it pre-moving to c++20
+        https://bugs.webkit.org/show_bug.cgi?id=226351
+
+        Reviewed by Alex Christensen.
+
+        Imports a copy of Tristan Brindle's Boost licensed implementation of std::span 
+        from 5d8d366eca918d0ed3d2d196cbeae6abfd874736 of https://github.com/tcbrindle/span.
+
+        It has been further modified to rename tcb::span to WTF::Span.
+
+        * LICENSE_1_0-Boost.txt: Added.
+        * WTF.xcodeproj/project.pbxproj:
+        * wtf/CMakeLists.txt:
+        * wtf/Span.h: Added.
+
 2021-06-07  Alex Christensen  <achristensen@webkit.org>
 
         Adopt SecTrustGetCertificateAtIndex replacement where available

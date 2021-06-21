@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2020 Apple Inc. All rights reserved.
+ * Copyright (C) 2010-2021 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -100,6 +100,7 @@
 
 #define MESSAGE_CHECK(assertion) MESSAGE_CHECK_BASE(assertion, connection())
 #define MESSAGE_CHECK_URL(url) MESSAGE_CHECK_BASE(checkURLReceivedFromWebProcess(url), connection())
+#define MESSAGE_CHECK_COMPLETION(assertion, completion) MESSAGE_CHECK_COMPLETION_BASE(assertion, connection(), completion)
 
 namespace WebKit {
 using namespace WebCore;
@@ -192,7 +193,6 @@ private:
 
 WebProcessProxy::WebProcessProxy(WebProcessPool& processPool, WebsiteDataStore* websiteDataStore, IsPrewarmed isPrewarmed)
     : AuxiliaryProcessProxy(processPool.alwaysRunsAtBackgroundPriority())
-    , m_responsivenessTimer(*this)
     , m_backgroundResponsivenessTimer(*this)
     , m_processPool(processPool, isPrewarmed == IsPrewarmed::Yes ? IsWeak::Yes : IsWeak::No)
     , m_mayHaveUniversalFileReadSandboxExtension(false)
@@ -460,7 +460,6 @@ void WebProcessProxy::shutDown()
         m_webConnection = nullptr;
     }
 
-    m_responsivenessTimer.invalidate();
     m_backgroundResponsivenessTimer.invalidate();
     m_activityForHoldingLockedFiles = nullptr;
     m_audibleMediaActivity = std::nullopt;
@@ -478,6 +477,10 @@ void WebProcessProxy::shutDown()
 
 #if ENABLE(ROUTING_ARBITRATION)
     m_routingArbitrator->processDidTerminate();
+#endif
+
+#if ENABLE(ATTACHMENT_ELEMENT)
+    m_hasIssuedAttachmentElementRelatedSandboxExtensions = false;
 #endif
 
     m_processPool->disconnectProcess(*this);
@@ -790,20 +793,18 @@ void WebProcessProxy::gpuProcessExited(GPUProcessTerminationReason reason)
 {
     for (auto& page : copyToVectorOf<RefPtr<WebPageProxy>>(m_pageMap.values()))
         page->gpuProcessExited(reason);
+
+#if ENABLE(ROUTING_ARBITRATION)
+    m_routingArbitrator->processDidTerminate();
+#endif
 }
 #endif
 
 #if ENABLE(WEB_AUTHN)
 void WebProcessProxy::getWebAuthnProcessConnection(Messages::WebProcessProxy::GetWebAuthnProcessConnection::DelayedReply&& reply)
 {
+    MESSAGE_CHECK_COMPLETION(hasCorrectPACEntitlement(), reply({ }));
     m_processPool->getWebAuthnProcessConnection(*this, WTFMove(reply));
-}
-#endif
-
-#if !PLATFORM(COCOA)
-bool WebProcessProxy::platformIsBeingDebugged() const
-{
-    return false;
 }
 #endif
 
@@ -848,9 +849,9 @@ bool WebProcessProxy::didReceiveSyncMessage(IPC::Connection& connection, IPC::De
 void WebProcessProxy::didClose(IPC::Connection& connection)
 {
 #if OS(DARWIN)
-    RELEASE_LOG_IF(isReleaseLoggingAllowed(), Process, "%p - WebProcessProxy didClose (web process %d crash)", this, connection.remoteProcessID());
+    RELEASE_LOG(Process, "%p - WebProcessProxy didClose (web process %d crash)", this, connection.remoteProcessID());
 #else
-    RELEASE_LOG_IF(isReleaseLoggingAllowed(), Process, "%p - WebProcessProxy didClose (web process crash)", this);
+    RELEASE_LOG(Process, "%p - WebProcessProxy didClose (web process crash)", this);
 #endif
 
     processDidTerminateOrFailedToLaunch(ProcessTerminationReason::Crash);
@@ -864,6 +865,10 @@ void WebProcessProxy::processDidTerminateOrFailedToLaunch(ProcessTerminationReas
 
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
     m_userMediaCaptureManagerProxy->clear();
+#endif
+
+#if ENABLE(ATTACHMENT_ELEMENT)
+    m_hasIssuedAttachmentElementRelatedSandboxExtensions = false;
 #endif
 
     if (auto* webConnection = this->webConnection())
@@ -974,30 +979,6 @@ void WebProcessProxy::didChangeIsResponsive()
         page->didChangeProcessIsResponsive();
 }
 
-bool WebProcessProxy::mayBecomeUnresponsive()
-{
-#if !defined(NDEBUG) || ASAN_ENABLED
-    // Disable responsiveness checks in slow builds to avoid false positives.
-    return false;
-#else
-    if (platformIsBeingDebugged())
-        return false;
-
-    static bool isLibgmallocEnabled = [] {
-        char* variable = getenv("DYLD_INSERT_LIBRARIES");
-        if (!variable)
-            return false;
-        if (!strstr(variable, "libgmalloc"))
-            return false;
-        return true;
-    }();
-    if (isLibgmallocEnabled)
-        return false;
-
-    return true;
-#endif
-}
-
 #if ENABLE(IPC_TESTING_API)
 void WebProcessProxy::setIgnoreInvalidMessageForTesting()
 {
@@ -1015,7 +996,7 @@ void WebProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::Connect
     AuxiliaryProcessProxy::didFinishLaunching(launcher, connectionIdentifier);
 
     if (!IPC::Connection::identifierIsValid(connectionIdentifier)) {
-        RELEASE_LOG_IF(isReleaseLoggingAllowed(), Process, "%p - WebProcessProxy didFinishLaunching - invalid connection identifier (web process failed to launch)", this);
+        RELEASE_LOG(Process, "%p - WebProcessProxy didFinishLaunching - invalid connection identifier (web process failed to launch)", this);
         processDidTerminateOrFailedToLaunch(ProcessTerminationReason::Crash);
         return;
     }
@@ -1049,11 +1030,6 @@ void WebProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::Connect
     enableRemoteInspectorIfNeeded();
 #endif
 #endif
-
-    if (m_shouldStartResponsivenessTimerWhenLaunched) {
-        auto useLazyStop = *std::exchange(m_shouldStartResponsivenessTimerWhenLaunched, std::nullopt);
-        startResponsivenessTimer(useLazyStop);
-    }
 }
 
 WebFrameProxy* WebProcessProxy::webFrame(FrameIdentifier frameID) const
@@ -1125,7 +1101,7 @@ RefPtr<API::UserInitiatedAction> WebProcessProxy::userInitiatedActivity(uint64_t
 
 bool WebProcessProxy::isResponsive() const
 {
-    return m_responsivenessTimer.isResponsive() && m_backgroundResponsivenessTimer.isResponsive();
+    return responsivenessTimer().isResponsive() && m_backgroundResponsivenessTimer.isResponsive();
 }
 
 void WebProcessProxy::didDestroyUserGestureToken(uint64_t identifier)
@@ -1225,14 +1201,14 @@ void WebProcessProxy::fetchWebsiteData(PAL::SessionID sessionID, OptionSet<Websi
     ASSERT(canSendMessage());
     ASSERT_UNUSED(sessionID, sessionID == this->sessionID());
 
-    RELEASE_LOG_IF(isReleaseLoggingAllowed(), ProcessSuspension, "%p - WebProcessProxy is taking a background assertion because the Web process is fetching Website data", this);
+    RELEASE_LOG(ProcessSuspension, "%p - WebProcessProxy is taking a background assertion because the Web process is fetching Website data", this);
 
     sendWithAsyncReply(Messages::WebProcess::FetchWebsiteData(dataTypes), [this, protectedThis = makeRef(*this), completionHandler = WTFMove(completionHandler)] (auto reply) mutable {
 #if RELEASE_LOG_DISABLED
         UNUSED_PARAM(this);
 #endif
         completionHandler(WTFMove(reply));
-        RELEASE_LOG_IF(isReleaseLoggingAllowed(), ProcessSuspension, "%p - WebProcessProxy is releasing a background assertion because the Web process is done fetching Website data", this);
+        RELEASE_LOG(ProcessSuspension, "%p - WebProcessProxy is releasing a background assertion because the Web process is done fetching Website data", this);
     });
 }
 
@@ -1241,14 +1217,14 @@ void WebProcessProxy::deleteWebsiteData(PAL::SessionID sessionID, OptionSet<Webs
     ASSERT(canSendMessage());
     ASSERT_UNUSED(sessionID, sessionID == this->sessionID());
 
-    RELEASE_LOG_IF(isReleaseLoggingAllowed(), ProcessSuspension, "%p - WebProcessProxy is taking a background assertion because the Web process is deleting Website data", this);
+    RELEASE_LOG(ProcessSuspension, "%p - WebProcessProxy is taking a background assertion because the Web process is deleting Website data", this);
 
     sendWithAsyncReply(Messages::WebProcess::DeleteWebsiteData(dataTypes, modifiedSince), [this, protectedThis = makeRef(*this), completionHandler = WTFMove(completionHandler)] () mutable {
 #if RELEASE_LOG_DISABLED
         UNUSED_PARAM(this);
 #endif
         completionHandler();
-        RELEASE_LOG_IF(isReleaseLoggingAllowed(), ProcessSuspension, "%p - WebProcessProxy is releasing a background assertion because the Web process is done deleting Website data", this);
+        RELEASE_LOG(ProcessSuspension, "%p - WebProcessProxy is releasing a background assertion because the Web process is done deleting Website data", this);
     });
 }
 
@@ -1257,14 +1233,14 @@ void WebProcessProxy::deleteWebsiteDataForOrigins(PAL::SessionID sessionID, Opti
     ASSERT(canSendMessage());
     ASSERT_UNUSED(sessionID, sessionID == this->sessionID());
 
-    RELEASE_LOG_IF(isReleaseLoggingAllowed(), ProcessSuspension, "%p - WebProcessProxy is taking a background assertion because the Web process is deleting Website data for several origins", this);
+    RELEASE_LOG(ProcessSuspension, "%p - WebProcessProxy is taking a background assertion because the Web process is deleting Website data for several origins", this);
 
     sendWithAsyncReply(Messages::WebProcess::DeleteWebsiteDataForOrigins(dataTypes, origins), [this, protectedThis = makeRef(*this), completionHandler = WTFMove(completionHandler)] () mutable {
 #if RELEASE_LOG_DISABLED
         UNUSED_PARAM(this);
 #endif
         completionHandler();
-        RELEASE_LOG_IF(isReleaseLoggingAllowed(), ProcessSuspension, "%p - WebProcessProxy is releasing a background assertion because the Web process is done deleting Website data for several origins", this);
+        RELEASE_LOG(ProcessSuspension, "%p - WebProcessProxy is releasing a background assertion because the Web process is done deleting Website data for several origins", this);
     });
 }
 
@@ -1274,34 +1250,11 @@ void WebProcessProxy::requestTermination(ProcessTerminationReason reason)
         return;
 
     auto protectedThis = makeRef(*this);
-    RELEASE_LOG_ERROR_IF(isReleaseLoggingAllowed(), Process, "%p - WebProcessProxy::requestTermination - PID %d - reason %d", this, processIdentifier(), reason);
+    RELEASE_LOG_ERROR(Process, "%p - WebProcessProxy::requestTermination - PID %d - reason %d", this, processIdentifier(), reason);
 
     AuxiliaryProcessProxy::terminate();
 
     processDidTerminateOrFailedToLaunch(reason);
-}
-
-bool WebProcessProxy::isReleaseLoggingAllowed() const
-{
-    return !m_websiteDataStore || m_websiteDataStore->sessionID().isAlwaysOnLoggingAllowed();
-}
-
-void WebProcessProxy::stopResponsivenessTimer()
-{
-    responsivenessTimer().stop();
-}
-
-void WebProcessProxy::startResponsivenessTimer(UseLazyStop useLazyStop)
-{
-    if (isLaunching()) {
-        m_shouldStartResponsivenessTimerWhenLaunched = useLazyStop;
-        return;
-    }
-
-    if (useLazyStop == UseLazyStop::Yes)
-        responsivenessTimer().startWithLazyStop();
-    else
-        responsivenessTimer().start();
 }
 
 void WebProcessProxy::enableSuddenTermination()
@@ -1532,8 +1485,13 @@ void WebProcessProxy::isResponsive(CompletionHandler<void(bool isWebProcessRespo
     if (callback)
         m_isResponsiveCallbacks.append(WTFMove(callback));
 
-    startResponsivenessTimer();
-    send(Messages::WebProcess::MainThreadPing(), 0);
+    checkForResponsiveness([weakThis = makeWeakPtr(*this)]() mutable {
+        if (!weakThis)
+            return;
+
+        for (auto& isResponsive : std::exchange(weakThis->m_isResponsiveCallbacks, { }))
+            isResponsive(true);
+    });
 }
 
 void WebProcessProxy::isResponsiveWithLazyStop()
@@ -1544,8 +1502,13 @@ void WebProcessProxy::isResponsiveWithLazyStop()
     if (!responsivenessTimer().hasActiveTimer()) {
         // We do not send a ping if we are already waiting for the WebProcess.
         // Spamming pings on a slow web process is not helpful.
-        responsivenessTimer().startWithLazyStop();
-        send(Messages::WebProcess::MainThreadPing(), 0);
+        checkForResponsiveness([weakThis = makeWeakPtr(*this)]() mutable {
+            if (!weakThis)
+                return;
+
+            for (auto& isResponsive : std::exchange(weakThis->m_isResponsiveCallbacks, { }))
+                isResponsive(true);
+        }, UseLazyStop::Yes);
     }
 }
 
@@ -1559,16 +1522,6 @@ bool WebProcessProxy::isJITEnabled() const
     return processPool().configuration().isJITEnabled();
 }
 
-void WebProcessProxy::didReceiveMainThreadPing()
-{
-    responsivenessTimer().stop();
-
-    auto isResponsiveCallbacks = WTFMove(m_isResponsiveCallbacks);
-    bool isWebProcessResponsive = true;
-    for (auto& callback : isResponsiveCallbacks)
-        callback(isWebProcessResponsive);
-}
-
 void WebProcessProxy::didReceiveBackgroundResponsivenessPing()
 {
     m_backgroundResponsivenessTimer.didReceiveBackgroundResponsivenessPong();
@@ -1576,7 +1529,6 @@ void WebProcessProxy::didReceiveBackgroundResponsivenessPing()
 
 void WebProcessProxy::processTerminated()
 {
-    m_responsivenessTimer.processTerminated();
     m_backgroundResponsivenessTimer.processTerminated();
 }
 
@@ -1999,3 +1951,4 @@ void WebProcessProxy::systemBeep()
 
 #undef MESSAGE_CHECK
 #undef MESSAGE_CHECK_URL
+#undef MESSAGE_CHECK_COMPLETION

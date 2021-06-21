@@ -767,6 +767,11 @@ String Internals::description(JSC::JSValue value)
     return toString(value);
 }
 
+void Internals::log(const String& value)
+{
+    WTFLogAlways("%s", value.utf8().data());
+}
+
 bool Internals::isPreloaded(const String& url)
 {
     Document* document = contextDocument();
@@ -2307,13 +2312,13 @@ ExceptionOr<RefPtr<NodeList>> Internals::nodesFromRect(Document& document, int c
 
     HitTestRequest request(hitType);
 
+    auto hitTestResult = HitTestResult { point, topPadding, rightPadding, bottomPadding, leftPadding };
     // When ignoreClipping is false, this method returns null for coordinates outside of the viewport.
-    if (!request.ignoreClipping() && !frameView->visibleContentRect().intersects(HitTestLocation::rectForPoint(point, topPadding, rightPadding, bottomPadding, leftPadding)))
+    if (!request.ignoreClipping() && !hitTestResult.hitTestLocation().intersects(LayoutRect { frameView->visibleContentRect() }))
         return nullptr;
 
-    HitTestResult result(point, topPadding, rightPadding, bottomPadding, leftPadding);
-    document.hitTest(request, result);
-    auto matches = WTF::map(result.listBasedTestResult(), [](const auto& node) { return node.copyRef(); });
+    document.hitTest(request, hitTestResult);
+    auto matches = WTF::map(hitTestResult.listBasedTestResult(), [](const auto& node) { return node.copyRef(); });
     return RefPtr<NodeList> { StaticNodeList::create(WTFMove(matches)) };
 }
 
@@ -4822,6 +4827,11 @@ void Internals::setMediaControlsMaximumRightContainerButtonCountOverride(HTMLMed
     mediaElement.setMediaControlsMaximumRightContainerButtonCountOverride(count);
 }
 
+void Internals::setMediaControlsHidePlaybackRates(HTMLMediaElement& mediaElement, bool hidePlaybackRates)
+{
+    mediaElement.setMediaControlsHidePlaybackRates(hidePlaybackRates);
+}
+
 #endif // ENABLE(VIDEO)
 
 #if !PLATFORM(COCOA)
@@ -5640,6 +5650,9 @@ void Internals::installImageOverlay(Element& element, Vector<ImageOverlayLine>&&
         lines.map([] (auto& line) -> TextRecognitionLineData {
             return makeDataForLine(line);
         })
+#if ENABLE(DATA_DETECTION)
+        , Vector<TextRecognitionDataDetector>()
+#endif
     });
 #else
     UNUSED_PARAM(lines);
@@ -6081,8 +6094,8 @@ bool Internals::hasSandboxIOKitOpenAccessToClass(const String& process, const St
 Vector<String> Internals::appHighlightContextMenuItemTitles() const
 {
     return {{
-        contextMenuItemTagAddHighlightToCurrentGroup(),
-        contextMenuItemTagAddHighlightToNewGroup(),
+        contextMenuItemTagAddHighlightToCurrentQuickNote(),
+        contextMenuItemTagAddHighlightToNewQuickNote(),
     }};
 }
 

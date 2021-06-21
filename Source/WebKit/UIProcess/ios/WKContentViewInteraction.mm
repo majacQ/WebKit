@@ -64,7 +64,7 @@
 #import "WKPreviewActionItemIdentifiers.h"
 #import "WKPreviewActionItemInternal.h"
 #import "WKPreviewElementInfoInternal.h"
-#import "WKQuickboardListViewController.h"
+#import "WKQuickboardViewControllerDelegate.h"
 #import "WKSelectMenuListViewController.h"
 #import "WKSyntheticFlagsChangedWebEvent.h"
 #import "WKTextInputListViewController.h"
@@ -174,23 +174,11 @@
 #import "PepperUICoreSPI.h"
 #endif
 
-#if ENABLE(IMAGE_ANALYSIS)
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+#import <WebKitAdditions/WKHoverGestureRecognizer.h>
+#endif
 
-// FIXME: This should be pulled out into a separate softlinking header (either in PAL or WebKit2).
-#import <VisionKitCore/VKImageAnalysis_WebKit.h>
-#import <VisionKitCore/VKImageAnalyzer.h>
-SOFT_LINK_PRIVATE_FRAMEWORK_OPTIONAL(VisionKitCore)
-SOFT_LINK_CLASS_OPTIONAL(VisionKitCore, VKImageAnalyzer)
-SOFT_LINK_CLASS_OPTIONAL(VisionKitCore, VKImageAnalyzerRequest)
-
-// FIXME: Remove this once <rdar://72480459> is in the SDK.
-@interface VKImageAnalyzerRequest (Staging_72480459)
-@property (nonatomic) NSURL *imageURL;
-@property (nonatomic) NSURL *pageURL;
-@end
-
-#endif // ENABLE(IMAGE_ANALYSIS)
-
+#import <pal/cocoa/VisionKitCoreSoftLink.h>
 #import <pal/ios/ManagedConfigurationSoftLink.h>
 #import <pal/ios/QuickLookSoftLink.h>
 
@@ -881,7 +869,7 @@ static WKDragSessionContext *ensureLocalDragSessionContext(id <UIDragSession> se
     _imageAnalysisDeferringGestureRecognizer = adoptNS([[WKDeferringGestureRecognizer alloc] initWithDeferringGestureDelegate:self]);
     [_imageAnalysisDeferringGestureRecognizer setName:@"Deferrer for image analysis"];
     [_imageAnalysisDeferringGestureRecognizer setImmediatelyFailsAfterTouchEnd:YES];
-    [_imageAnalysisDeferringGestureRecognizer setEnabled:WebKit::isLiveTextEnabled()];
+    [_imageAnalysisDeferringGestureRecognizer setEnabled:WebKit::isLiveTextAvailableAndEnabled()];
 #endif
 
     for (WKDeferringGestureRecognizer *gesture in self.deferringGestures) {
@@ -898,6 +886,10 @@ static WKDragSessionContext *ensureLocalDragSessionContext(id <UIDragSession> se
 
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
     [self setUpMouseGestureRecognizer];
+#endif
+
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+    [self setUpHoverGestureRecognizer];
 #endif
 
 #if HAVE(LOOKUP_GESTURE_RECOGNIZER)
@@ -1082,6 +1074,11 @@ static WKDragSessionContext *ensureLocalDragSessionContext(id <UIDragSession> se
     [self removeGestureRecognizer:_mouseGestureRecognizer.get()];
 #endif
 
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+    [_hoverGestureRecognizer setDelegate:nil];
+    [self removeGestureRecognizer:_hoverGestureRecognizer.get()];
+#endif
+
 #if HAVE(LOOKUP_GESTURE_RECOGNIZER)
     [_lookupGestureRecognizer setDelegate:nil];
     [self removeGestureRecognizer:_lookupGestureRecognizer.get()];
@@ -1227,6 +1224,9 @@ static WKDragSessionContext *ensureLocalDragSessionContext(id <UIDragSession> se
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
     [self removeGestureRecognizer:_mouseGestureRecognizer.get()];
 #endif
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+    [self removeGestureRecognizer:_hoverGestureRecognizer.get()];
+#endif
 #if HAVE(LOOKUP_GESTURE_RECOGNIZER)
     [self removeGestureRecognizer:_lookupGestureRecognizer.get()];
 #endif
@@ -1251,6 +1251,9 @@ static WKDragSessionContext *ensureLocalDragSessionContext(id <UIDragSession> se
     [self addGestureRecognizer:_twoFingerSingleTapGestureRecognizer.get()];
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
     [self addGestureRecognizer:_mouseGestureRecognizer.get()];
+#endif
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+    [self addGestureRecognizer:_hoverGestureRecognizer.get()];
 #endif
 #if HAVE(LOOKUP_GESTURE_RECOGNIZER)
     [self addGestureRecognizer:_lookupGestureRecognizer.get()];
@@ -1719,6 +1722,11 @@ inline static UIKeyModifierFlags gestureRecognizerModifierFlags(UIGestureRecogni
         return YES;
 #endif
 
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+    if (gestureRecognizer == _hoverGestureRecognizer)
+        return NO;
+#endif
+
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
     if (gestureRecognizer != _mouseGestureRecognizer && [_mouseGestureRecognizer mouseTouch] == touch)
         return NO;
@@ -1750,6 +1758,10 @@ inline static UIKeyModifierFlags gestureRecognizerModifierFlags(UIGestureRecogni
 {
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
     if (gestureRecognizer == _mouseGestureRecognizer)
+        return NO;
+#endif
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+    if (gestureRecognizer == _hoverGestureRecognizer)
         return NO;
 #endif
     return YES;
@@ -2190,7 +2202,7 @@ static NSValue *nsSizeForTapHighlightBorderRadius(WebCore::IntSize borderRadius,
         return NO;
     case WebKit::InputType::Select: {
 #if ENABLE(IOS_FORM_CONTROL_REFRESH)
-        if ([self _formControlRefreshEnabled])
+        if (self._shouldUseContextMenusForFormControls)
             return NO;
 #endif
         return !WebKit::currentUserInterfaceIdiomIsPadOrMac();
@@ -2367,6 +2379,11 @@ static inline bool isSamePair(UIGestureRecognizer *a, UIGestureRecognizer *b, UI
 
 #if HAVE(UIKIT_WITH_MOUSE_SUPPORT)
     if ([gestureRecognizer isKindOfClass:[WKMouseGestureRecognizer class]] || [otherGestureRecognizer isKindOfClass:[WKMouseGestureRecognizer class]])
+        return YES;
+#endif
+
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+    if ([gestureRecognizer isKindOfClass:[WKHoverGestureRecognizer class]] || [otherGestureRecognizer isKindOfClass:[WKHoverGestureRecognizer class]])
         return YES;
 #endif
 
@@ -3263,7 +3280,7 @@ static void cancelPotentialTapIfNecessary(WKContentView* contentView)
         return false;
     case WebKit::InputType::Select: {
 #if ENABLE(IOS_FORM_CONTROL_REFRESH)
-        if ([self _formControlRefreshEnabled])
+        if (self._shouldUseContextMenusForFormControls)
             return NO;
 #endif
         return !WebKit::currentUserInterfaceIdiomIsPadOrMac();
@@ -3860,9 +3877,9 @@ WEBCORE_COMMAND_FOR_WEBVIEW(pasteAndMatchStyle);
 - (id)targetForAction:(SEL)action withSender:(id)sender
 {
 #if ENABLE(APP_HIGHLIGHTS)
-    if (action == @selector(createHighlightInCurrentGroupWithRange:))
+    if (action == @selector(createHighlightForCurrentQuickNoteWithRange:))
         return self.shouldAllowAppHighlightCreation && _page->appHighlightsVisibility() ? self : nil;
-    if (action == @selector(createHighlightInNewGroupWithRange:))
+    if (action == @selector(createHighlightForNewQuickNoteWithRange:))
         return self.shouldAllowAppHighlightCreation && !_page->appHighlightsVisibility() ? self : nil;
 #endif
     return [_webView targetForAction:action withSender:sender];
@@ -6682,22 +6699,24 @@ static BOOL allPasteboardItemOriginsMatchOrigin(UIPasteboard *pasteboard, const 
     [self setInputDelegate:nil];
 }
 
+- (RetainPtr<PUICTextInputContext>)createQuickboardTextInputContext
+{
+    auto context = adoptNS([[PUICTextInputContext alloc] init]);
+    [self _updateTextInputTraits:context.get()];
+    [context setInitialText:_focusedElementInformation.value];
+#if HAVE(QUICKBOARD_CONTROLLER)
+    [context setAcceptsEmoji:YES];
+    [context setShouldPresentModernTextInputUI:YES];
+#endif
+    return context;
+}
+
 #if HAVE(QUICKBOARD_CONTROLLER)
 
 - (RetainPtr<PUICQuickboardController>)_createQuickboardController:(UIViewController *)presentingViewController
 {
     auto quickboardController = adoptNS([[PUICQuickboardController alloc] init]);
-
-    auto suggestions = adoptNS([[NSMutableArray<NSString *> alloc] initWithCapacity:[_formInputSession suggestions].count]);
-    for (UITextSuggestion *suggestion in [_formInputSession suggestions])
-        [suggestions addObject:suggestion.inputText];
-
-    auto context = adoptNS([[PUICTextInputContext alloc] init]);
-    [self _updateTextInputTraits:context.get()];
-    [context setSuggestions:suggestions.get()];
-    [context setInitialText:_focusedElementInformation.value];
-    [context setAcceptsEmoji:YES];
-    [context setShouldPresentModernTextInputUI:YES];
+    auto context = self.createQuickboardTextInputContext;
     [quickboardController setQuickboardPresentingViewController:presentingViewController];
     [quickboardController setExcludedFromScreenCapture:[context isSecureTextEntry]];
     [quickboardController setTextInputContext:context.get()];
@@ -6708,7 +6727,6 @@ static BOOL allPasteboardItemOriginsMatchOrigin(UIPasteboard *pasteboard, const 
 
 static bool canUseQuickboardControllerFor(UITextContentType type)
 {
-    // We can remove this restriction once PUICQuickboardController supports displaying text suggestion strings that are not login credentials.
     return [type isEqualToString:UITextContentTypeUsername] || [type isEqualToString:UITextContentTypePassword] || [type isEqualToString:UITextContentTypeEmailAddress];
 }
 
@@ -6947,7 +6965,7 @@ static bool canUseQuickboardControllerFor(UITextContentType type)
     if (_isBlurringFocusedElement || ![_presentedFullScreenInputViewController isKindOfClass:[WKTextInputListViewController class]])
         return;
 
-    [(WKTextInputListViewController *)_presentedFullScreenInputViewController reloadTextSuggestions];
+    [(WKTextInputListViewController *)_presentedFullScreenInputViewController updateTextSuggestions:[_focusedFormControlView suggestions]];
 }
 
 #pragma mark - WKSelectMenuListViewControllerDelegate
@@ -7648,6 +7666,14 @@ static bool canUseQuickboardControllerFor(UITextContentType type)
 {
 #if HAVE(LINK_PREVIEW) && USE(UICONTEXTMENU)
     return linkedOnOrAfter(WebCore::SDKVersion::FirstThatHasUIContextMenuInteraction);
+#endif
+    return NO;
+}
+
+- (BOOL)_shouldUseContextMenusForFormControls
+{
+#if ENABLE(IOS_FORM_CONTROL_REFRESH)
+    return self._formControlRefreshEnabled && self._shouldUseContextMenus;
 #endif
     return NO;
 }
@@ -9204,16 +9230,7 @@ static Vector<WebCore::IntSize> sizesOfPlaceholderElementsToInsertWhenDroppingIt
 
 #pragma mark - WKQuickboardViewControllerDelegate
 
-- (CGFloat)viewController:(PUICQuickboardViewController *)controller inputContextViewHeightForSize:(CGSize)size
-{
-    id <_WKInputDelegate> delegate = self.webView._inputDelegate;
-    if (![delegate respondsToSelector:@selector(_webView:focusedElementContextViewHeightForFittingSize:inputSession:)])
-        return 0;
-
-    return [delegate _webView:self.webView focusedElementContextViewHeightForFittingSize:size inputSession:_formInputSession.get()];
-}
-
-- (BOOL)allowsLanguageSelectionMenuForListViewController:(PUICQuickboardViewController *)controller
+- (BOOL)allowsLanguageSelectionForListViewController:(PUICQuickboardViewController *)controller
 {
     switch (_focusedElementInformation.elementType) {
     case WebKit::InputType::ContentEditable:
@@ -9280,20 +9297,9 @@ static Vector<WebCore::IntSize> sizesOfPlaceholderElementsToInsertWhenDroppingIt
     }
 }
 
-- (NSString *)textContentTypeForListViewController:(WKTextInputListViewController *)controller
+- (PUICTextInputContext *)textInputContextForListViewController:(WKTextInputListViewController *)controller
 {
-    return self.textContentTypeForQuickboard;
-}
-
-- (NSArray<UITextSuggestion *> *)textSuggestionsForListViewController:(WKTextInputListViewController *)controller
-{
-    return [_focusedFormControlView suggestions];
-}
-
-- (void)listViewController:(WKTextInputListViewController *)controller didSelectTextSuggestion:(UITextSuggestion *)suggestion
-{
-    [self insertTextSuggestion:suggestion];
-    [self dismissQuickboardViewControllerAndRevealFocusedFormOverlayIfNecessary:controller];
+    return self.createQuickboardTextInputContext.autorelease();
 }
 
 - (BOOL)allowsDictationInputForListViewController:(PUICQuickboardViewController *)controller
@@ -9311,21 +9317,34 @@ static Vector<WebCore::IntSize> sizesOfPlaceholderElementsToInsertWhenDroppingIt
 }
 #endif
 
-
-
-
 #if ENABLE(APP_HIGHLIGHTS)
-- (void)createHighlightInCurrentGroupWithRange:(id)sender
+
+- (void)setUpAppHighlightMenusIfNeeded
+{
+    if (!_page->preferences().appHighlightsEnabled() || !self.window || !_page->editorState().selectionIsRange)
+        return;
+    
+    for (UIMenuItem *menuItem in [[UIMenuController sharedMenuController] menuItems]) {
+        if ([menuItem action] == @selector(createHighlightForCurrentQuickNoteWithRange:) || [menuItem action] == @selector(createHighlightForNewQuickNoteWithRange:))
+            return;
+    }
+    
+    auto addHighlightCurrentQuickNoteItem = adoptNS([[UIMenuItem alloc] initWithTitle:WebCore::contextMenuItemTagAddHighlightToCurrentQuickNote() action:@selector(createHighlightForCurrentQuickNoteWithRange:)]);
+    auto addHighlightNewQuickNoteItem = adoptNS([[UIMenuItem alloc] initWithTitle:WebCore::contextMenuItemTagAddHighlightToNewQuickNote() action:@selector(createHighlightForNewQuickNoteWithRange:)]);
+    [[UIMenuController sharedMenuController] setMenuItems:@[ addHighlightCurrentQuickNoteItem.get(), addHighlightNewQuickNoteItem.get() ]];
+}
+
+- (void)createHighlightForCurrentQuickNoteWithRange:(id)sender
 {
     _page->createAppHighlightInSelectedRange(WebCore::CreateNewGroupForHighlight::No, WebCore::HighlightRequestOriginatedInApp::No);
 }
 
-- (void)createHighlightInNewGroupWithRange:(id)sender
+- (void)createHighlightForNewQuickNoteWithRange:(id)sender
 {
     _page->createAppHighlightInSelectedRange(WebCore::CreateNewGroupForHighlight::Yes, WebCore::HighlightRequestOriginatedInApp::No);
 }
 
-#endif
+#endif // ENABLE(APP_HIGHLIGHTS)
 
 - (void)setContinuousSpellCheckingEnabled:(BOOL)enabled
 {
@@ -9433,6 +9452,29 @@ static BOOL applicationIsKnownToIgnoreMouseEvents(const char* &warningVersion)
 }
 
 #endif // HAVE(UIKIT_WITH_MOUSE_SUPPORT)
+
+#if ENABLE(HOVER_GESTURE_RECOGNIZER)
+
+- (void)setUpHoverGestureRecognizer
+{
+    _hoverGestureRecognizer = adoptNS([[WKHoverGestureRecognizer alloc] initWithTarget:self action:@selector(hoverGestureRecognizerChanged:)]);
+    [_hoverGestureRecognizer setDelegate:self];
+    [self addGestureRecognizer:_hoverGestureRecognizer.get()];
+}
+
+- (void)hoverGestureRecognizerChanged:(WKHoverGestureRecognizer *)gestureRecognizer
+{
+    if (!_page->hasRunningProcess())
+        return;
+
+    auto event = gestureRecognizer.lastMouseEvent;
+    if (!event)
+        return;
+
+    _page->handleMouseEvent(*event);
+}
+
+#endif // ENABLE(HOVER_GESTURE_RECOGNIZER)
 
 #if ENABLE(MEDIA_CONTROLS_CONTEXT_MENUS) && USE(UICONTEXTMENU)
 
@@ -9891,7 +9933,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 - (bool)actionSheetAssistant:(WKActionSheetAssistant *)assistant shouldIncludeShowTextActionForElement:(_WKActivatedElementInfo *)element
 {
-    return WebKit::isLiveTextEnabled() && _hasSelectableTextInImage;
+    return WebKit::isLiveTextAvailableAndEnabled() && _hasSelectableTextInImage;
 }
 
 - (void)actionSheetAssistant:(WKActionSheetAssistant *)assistant showTextForImage:(UIImage *)image imageURL:(NSURL *)imageURL title:(NSString *)title imageBounds:(CGRect)imageBounds
@@ -9901,7 +9943,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 - (bool)actionSheetAssistant:(WKActionSheetAssistant *)assistant shouldIncludeLookUpImageActionForElement:(_WKActivatedElementInfo *)element
 {
-    return WebKit::isLiveTextEnabled() && _hasVisualSearchResults;
+    return WebKit::isLiveTextAvailableAndEnabled() && _hasVisualSearchResults;
 }
 
 - (void)actionSheetAssistant:(WKActionSheetAssistant *)assistant lookUpImage:(UIImage *)image imageURL:(NSURL *)imageURL title:(NSString *)title imageBounds:(CGRect)imageBounds
@@ -9916,7 +9958,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 - (VKImageAnalyzer *)imageAnalyzer
 {
     if (!_imageAnalyzer)
-        _imageAnalyzer = adoptNS([allocVKImageAnalyzerInstance() init]);
+        _imageAnalyzer = adoptNS([PAL::allocVKImageAnalyzerInstance() init]);
     return _imageAnalyzer.get();
 }
 
@@ -9927,7 +9969,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 - (void)_setUpImageAnalysis
 {
-    if (!WebKit::isLiveTextEnabled())
+    if (!WebKit::isLiveTextAvailableAndEnabled())
         return;
 
     _pendingImageAnalysisRequestIdentifier = std::nullopt;
@@ -9951,7 +9993,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 - (void)_tearDownImageAnalysis
 {
-    if (!WebKit::isLiveTextEnabled())
+    if (!WebKit::isLiveTextAvailableAndEnabled())
         return;
 
     [_imageAnalysisGestureRecognizer setDelegate:nil];
@@ -9985,7 +10027,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 - (RetainPtr<VKImageAnalyzerRequest>)createImageAnalysisRequest:(VKAnalysisTypes)analysisTypes image:(UIImage *)image imageURL:(NSURL *)imageURL
 {
-    auto request = adoptNS([allocVKImageAnalyzerRequestInstance() initWithImage:image orientation:VKImageOrientationUp requestType:analysisTypes]);
+    auto request = adoptNS([PAL::allocVKImageAnalyzerRequestInstance() initWithImage:image orientation:VKImageOrientationUp requestType:analysisTypes]);
     [request setImageURL:imageURL];
     [request setPageURL:[NSURL _web_URLWithWTFString:_page->currentURL()]];
     return request;
@@ -10041,7 +10083,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 - (void)imageAnalysisGestureDidBegin:(WKImageAnalysisGestureRecognizer *)gestureRecognizer
 {
-    ASSERT(WebKit::isLiveTextEnabled());
+    ASSERT(WebKit::isLiveTextAvailableAndEnabled());
 
     auto requestIdentifier = WebKit::ImageAnalysisRequestIdentifier::generate();
 
@@ -10235,10 +10277,6 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 
 #endif // ENABLE(IMAGE_ANALYSIS)
 
-#if USE(APPLE_INTERNAL_SDK)
-#import <WebKitAdditions/WKContentViewInteractionAdditionsAfter.mm>
-#endif
-
 @end
 
 @implementation WKContentView (WKTesting)
@@ -10360,7 +10398,7 @@ static RetainPtr<NSItemProvider> createItemProvider(const WebKit::WebPageProxy& 
 {
 #if HAVE(PEPPER_UI_CORE)
     if ([_presentedFullScreenInputViewController isKindOfClass:[WKTextInputListViewController class]])
-        return [self textContentTypeForListViewController:(WKTextInputListViewController *)_presentedFullScreenInputViewController.get()];
+        return [(WKTextInputListViewController *)_presentedFullScreenInputViewController textInputContext].textContentType;
 #if HAVE(QUICKBOARD_CONTROLLER)
     if (_presentedQuickboardController)
         return [_presentedQuickboardController textInputContext].textContentType;

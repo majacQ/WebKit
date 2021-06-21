@@ -1201,19 +1201,17 @@ void RenderFlexibleBox::prepareOrderIteratorAndMargins()
     }
 }
 
-LayoutUnit RenderFlexibleBox::adjustChildSizeForMinAndMax(RenderBox& child, LayoutUnit childSize)
+std::pair<LayoutUnit, LayoutUnit> RenderFlexibleBox::computeFlexItemMinMaxSizes(RenderBox& child)
 {
     Length max = mainSizeLengthForChild(MaxSize, child);
     std::optional<LayoutUnit> maxExtent = std::nullopt;
-    if (max.isSpecifiedOrIntrinsic()) {
+    if (max.isSpecifiedOrIntrinsic())
         maxExtent = computeMainAxisExtentForChild(child, MaxSize, max);
-        childSize = std::min(childSize, maxExtent.value_or(childSize));
-    }
 
     Length min = mainSizeLengthForChild(MinSize, child);
     // Intrinsic sizes in child's block axis are handled by the min-size:auto code path.
     if (min.isSpecified() || (min.isIntrinsic() && mainAxisIsChildInlineAxis(child)))
-        return std::max(childSize, std::max(0_lu, computeMainAxisExtentForChild(child, MinSize, min).value_or(childSize)));
+        return { computeMainAxisExtentForChild(child, MinSize, min).value_or(0_lu), maxExtent.value_or(LayoutUnit::max()) };
     
     if (shouldApplyMinSizeAutoForChild(child)) {
         // FIXME: If the min value is expected to be valid here, we need to come up with a non optional version of computeMainAxisExtentForChild and
@@ -1234,19 +1232,19 @@ LayoutUnit RenderFlexibleBox::adjustChildSizeForMinAndMax(RenderBox& child, Layo
             LayoutUnit resolvedMainSize = computeMainAxisExtentForChild(child, MainOrPreferredSize, mainSize).value_or(0);
             ASSERT(resolvedMainSize >= 0);
             LayoutUnit specifiedSize = std::min(resolvedMainSize, maxExtent.value_or(resolvedMainSize));
-            return std::max(childSize, std::min(specifiedSize, contentSize));
+            return { std::min(specifiedSize, contentSize), maxExtent.value_or(LayoutUnit::max()) };
         }
 
         if (child.isRenderReplaced() && childHasComputableAspectRatioAndCrossSizeIsConsideredDefinite(child)) {
             LayoutUnit transferredSize = computeMainSizeFromAspectRatioUsing(child, childCrossSizeLength);
             transferredSize = adjustChildSizeForAspectRatioCrossAxisMinAndMax(child, transferredSize);
-            return std::max(childSize, std::min(transferredSize, contentSize));
+            return { std::min(transferredSize, contentSize), maxExtent.value_or(LayoutUnit::max()) };
         }
 
-        return std::max(childSize, contentSize);
+        return { contentSize, maxExtent.value_or(LayoutUnit::max()) };
     }
 
-    return std::max(0_lu, childSize);
+    return { 0_lu, maxExtent.value_or(LayoutUnit::max()) };
 }
     
 bool RenderFlexibleBox::useChildOverridingCrossSizeForPercentageResolution(const RenderBox& child)
@@ -1308,6 +1306,7 @@ LayoutUnit RenderFlexibleBox::adjustChildSizeForAspectRatioCrossAxisMinAndMax(co
 
 FlexItem RenderFlexibleBox::constructFlexItem(RenderBox& child, bool relayoutChildren)
 {
+    auto childHadLayout = child.everHadLayout();
     child.clearOverridingContentSize();
     if (childHasIntrinsicMainAxisSize(child)) {
         // If this condition is true, then computeMainAxisExtentForChild will call
@@ -1333,9 +1332,8 @@ FlexItem RenderFlexibleBox::constructFlexItem(RenderBox& child, bool relayoutChi
     
     LayoutUnit borderAndPadding = isHorizontalFlow() ? child.horizontalBorderAndPaddingExtent() : child.verticalBorderAndPaddingExtent();
     LayoutUnit childInnerFlexBaseSize = computeInnerFlexBaseSizeForChild(child, borderAndPadding);
-    LayoutUnit childMinMaxAppliedMainAxisExtent = adjustChildSizeForMinAndMax(child, childInnerFlexBaseSize);
     LayoutUnit margin = isHorizontalFlow() ? child.horizontalMarginExtent() : child.verticalMarginExtent();
-    return FlexItem(child, childInnerFlexBaseSize, childMinMaxAppliedMainAxisExtent, borderAndPadding, margin);
+    return FlexItem(child, childInnerFlexBaseSize, borderAndPadding, margin, computeFlexItemMinMaxSizes(child), childHadLayout);
 }
     
 void RenderFlexibleBox::freezeViolations(Vector<FlexItem*>& violations, LayoutUnit& availableFreeSpace, double& totalFlexGrow, double& totalFlexShrink, double& totalWeightedFlexShrink)
@@ -1409,8 +1407,8 @@ bool RenderFlexibleBox::resolveFlexibleLengths(FlexSign flexSign, Vector<FlexIte
             extraSpace = remainingFreeSpace * child.style().flexShrink() * flexItem.flexBaseContentSize / totalWeightedFlexShrink;
         if (std::isfinite(extraSpace))
             childSize += LayoutUnit::fromFloatRound(extraSpace);
-        
-        LayoutUnit adjustedChildSize = adjustChildSizeForMinAndMax(child, childSize);
+
+        LayoutUnit adjustedChildSize = flexItem.constrainSizeByMinMax(childSize);
         ASSERT(adjustedChildSize >= 0);
         flexItem.flexedContentSize = adjustedChildSize;
         usedFreeSpace += adjustedChildSize - flexItem.flexBaseContentSize;
@@ -1737,7 +1735,6 @@ void RenderFlexibleBox::layoutAndPlaceChildren(LayoutUnit& crossAxisOffset, Vect
     for (size_t i = 0; i < children.size(); ++i) {
         const auto& flexItem = children[i];
         auto& child = flexItem.box;
-        bool childHadLayout = child.everHadLayout();
 
         ASSERT(!flexItem.box.isOutOfFlowPositioned());
 
@@ -1768,7 +1765,7 @@ void RenderFlexibleBox::layoutAndPlaceChildren(LayoutUnit& crossAxisOffset, Vect
         if (child.needsLayout())
             m_relaidOutChildren.add(&child);
         child.layoutIfNeeded();
-        if (!childHadLayout && child.checkForRepaintDuringLayout()) {
+        if (!flexItem.everHadLayout && child.checkForRepaintDuringLayout()) {
             child.repaint();
             child.repaintOverhangingFloats(true);
         }

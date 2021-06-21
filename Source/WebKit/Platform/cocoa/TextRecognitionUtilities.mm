@@ -28,9 +28,8 @@
 
 #if ENABLE(IMAGE_ANALYSIS)
 
-#import <VisionKitCore/VKImageAnalysis_WebKit.h>
-#import <VisionKitCore/VKQuad.h>
 #import <WebCore/TextRecognitionResult.h>
+#import <pal/cocoa/VisionKitCoreSoftLink.h>
 #import <pal/spi/cocoa/FeatureFlagsSPI.h>
 
 // Note that this is actually declared as an Objective-C class in VisionKit headers.
@@ -102,12 +101,17 @@ TextRecognitionResult makeTextRecognitionResult(VKImageAnalysis *analysis)
 #include <WebKitAdditions/TextRecognitionUtilitiesAdditions.mm>
 #else
 
-bool isLiveTextEnabled()
+static bool isLiveTextEnabled()
 {
     return true;
 }
 
 #endif
+
+bool isLiveTextAvailableAndEnabled()
+{
+    return PAL::isVisionKitCoreFrameworkAvailable() && isLiveTextEnabled();
+}
 
 } // namespace WebKit
 

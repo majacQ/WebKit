@@ -2540,12 +2540,10 @@ void EventHandler::updateMouseEventTargetNode(const AtomString& eventType, Node*
     m_elementUnderMouse = targetElement;
 
 #if ENABLE(IMAGE_ANALYSIS)
-    if (platformMouseEvent.syntheticClickType() == NoTap) {
-        if (m_elementUnderMouse && is<RenderImage>(m_elementUnderMouse->renderer()))
-            m_textRecognitionHoverTimer.restart();
-        else
-            m_textRecognitionHoverTimer.stop();
-    }
+    if (!m_elementUnderMouse || !is<RenderImage>(m_elementUnderMouse->renderer()))
+        m_textRecognitionHoverTimer.stop();
+    else if (!platformMouseEvent.movementDelta().isZero())
+        m_textRecognitionHoverTimer.restart();
 #endif // ENABLE(IMAGE_ANALYSIS)
 
     if (auto* page = m_frame.page())
@@ -2588,16 +2586,16 @@ void EventHandler::updateMouseEventTargetNode(const AtomString& eventType, Node*
                 enteredElementsChain.shrink(enteredElementsChain.size() - i);
             }
 
-            if (m_lastElementUnderMouse)
-                m_lastElementUnderMouse->dispatchMouseEvent(platformMouseEvent, eventNames().mouseoutEvent, 0, m_elementUnderMouse.get());
+            if (auto lastElementUnderMouse = m_lastElementUnderMouse)
+                lastElementUnderMouse->dispatchMouseEvent(platformMouseEvent, eventNames().mouseoutEvent, 0, m_elementUnderMouse.get());
 
             for (auto& chain : leftElementsChain) {
                 if (hasCapturingMouseLeaveListener || chain->hasEventListeners(eventNames().pointerleaveEvent) || chain->hasEventListeners(eventNames().mouseleaveEvent))
                     chain->dispatchMouseEvent(platformMouseEvent, eventNames().mouseleaveEvent, 0, m_elementUnderMouse.get());
             }
 
-            if (m_elementUnderMouse)
-                m_elementUnderMouse->dispatchMouseEvent(platformMouseEvent, eventNames().mouseoverEvent, 0, m_lastElementUnderMouse.get());
+            if (auto elementUnderMouse = m_elementUnderMouse)
+                elementUnderMouse->dispatchMouseEvent(platformMouseEvent, eventNames().mouseoverEvent, 0, m_lastElementUnderMouse.get());
 
             for (auto& chain : WTF::makeReversedRange(enteredElementsChain)) {
                 if (hasCapturingMouseEnterListener || chain->hasEventListeners(eventNames().pointerenterEvent) || chain->hasEventListeners(eventNames().mouseenterEvent))
@@ -2703,8 +2701,10 @@ bool EventHandler::dispatchMouseEvent(const AtomString& eventType, Node* targetN
 
     updateMouseEventTargetNode(eventType, targetNode, platformMouseEvent, fireMouseOverOut);
 
-    if (m_elementUnderMouse && !m_elementUnderMouse->dispatchMouseEvent(platformMouseEvent, eventType, clickCount))
-        return false;
+    if (auto elementUnderMouse = m_elementUnderMouse) {
+        if (!elementUnderMouse->dispatchMouseEvent(platformMouseEvent, eventType, clickCount))
+            return false;
+    }
 
     if (eventType != eventNames().mousedownEvent)
         return true;

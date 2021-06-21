@@ -174,7 +174,7 @@
 #import <pal/spi/ios/GraphicsServicesSPI.h>
 #import <wtf/cocoa/Entitlements.h>
 
-#define RELEASE_LOG_IF_ALLOWED(...) RELEASE_LOG_IF(_page && _page->isAlwaysOnLoggingAllowed(), ViewState, __VA_ARGS__)
+#define WKWEBVIEW_RELEASE_LOG(...) RELEASE_LOG(ViewState, __VA_ARGS__)
 #endif // PLATFORM(IOS_FAMILY)
 
 #if PLATFORM(MAC)
@@ -1170,6 +1170,18 @@ static WKMediaPlaybackState toWKMediaPlaybackState(WebKit::MediaPlaybackState me
 
     auto handler = makeBlockPtr(completionHandler);
 
+    if (CGRectIsEmpty(rectInViewCoordinates) || !snapshotWidth) {
+        RunLoop::main().dispatch([completionHandler = WTFMove(completionHandler)]() mutable {
+#if USE(APPKIT)
+            auto image = adoptNS([[NSImage alloc] initWithSize:NSMakeSize(0, 0)]);
+#else
+            auto image = adoptNS([[UIImage alloc] init]);
+#endif
+            completionHandler(image.get(), nil);
+        });
+        return;
+    }
+
 #if USE(APPKIT)
     CGFloat imageScale = snapshotWidth / rectInViewCoordinates.size.width;
     CGFloat imageHeight = imageScale * rectInViewCoordinates.size.height;
@@ -1218,13 +1230,20 @@ static WKMediaPlaybackState toWKMediaPlaybackState(WebKit::MediaPlaybackState me
         return;
     }
 
-    _page->callAfterNextPresentationUpdate([callSnapshotRect = WTFMove(callSnapshotRect), handler](WebKit::CallbackBase::Error error) {
+    _page->callAfterNextPresentationUpdate([callSnapshotRect = WTFMove(callSnapshotRect), handler](WebKit::CallbackBase::Error error) mutable {
         if (error != WebKit::CallbackBase::Error::None) {
             tracePoint(TakeSnapshotEnd, snapshotFailedTraceValue);
             handler(nil, createNSError(WKErrorUnknown).get());
             return;
         }
-        callSnapshotRect();
+
+        // Create an implicit transaction to ensure a commit will happen next.
+        [CATransaction activate];
+
+        // Wait for the next flush to ensure the latest IOSurfaces are pushed to backboardd before taking the snapshot.
+        [CATransaction addCommitHandler:[callSnapshotRect = WTFMove(callSnapshotRect)] {
+            callSnapshotRect();
+        } forPhase:kCATransactionPhasePostCommit];
     });
 #endif
 }
@@ -1560,7 +1579,8 @@ inline OptionSet<WebKit::FindOptions> toFindOptions(WKFindConfiguration *configu
 
     auto wkHighlight = adoptNS([[_WKAppHighlight alloc] initWithHighlight:highlight.highlight->createNSData().get() text:text image:nil]);
 
-    [delegate _webView:self storeAppHighlight:wkHighlight.get() inNewGroup:highlight.isNewGroup == WebCore::CreateNewGroupForHighlight::Yes requestOriginatedInApp:highlight.requestOriginatedInApp == WebCore::HighlightRequestOriginatedInApp::Yes];
+    if ([delegate respondsToSelector:@selector(_webView:storeAppHighlight:inNewGroup:requestOriginatedInApp:)])
+        [delegate _webView:self storeAppHighlight:wkHighlight.get() inNewGroup:highlight.isNewGroup == WebCore::CreateNewGroupForHighlight::Yes requestOriginatedInApp:highlight.requestOriginatedInApp == WebCore::HighlightRequestOriginatedInApp::Yes];
 }
 #endif
 
@@ -3642,4 +3662,4 @@ static inline OptionSet<WebKit::FindOptions> toFindOptions(_WKFindOptions wkFind
 
 @end
 
-#undef RELEASE_LOG_IF_ALLOWED
+#undef WKWEBVIEW_RELEASE_LOG

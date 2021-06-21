@@ -329,8 +329,6 @@ struct _WebKitWebViewBasePrivate {
 #endif
 
     // Touch gestures state
-    double initialZoomScale;
-    IntPoint initialZoomPoint;
     FloatPoint dragOffset;
     bool isLongPressed;
     bool isBeingDragged;
@@ -1849,16 +1847,6 @@ static gboolean webkitWebViewBaseFocus(GtkWidget* widget, GtkDirectionType direc
     return GTK_WIDGET_CLASS(webkit_web_view_base_parent_class)->focus(widget, direction);
 }
 
-static void webkitWebViewBaseZoomBegin(WebKitWebViewBase* webViewBase, GdkEventSequence* sequence, GtkGesture* gesture)
-{
-    WebKitWebViewBasePrivate* priv = webViewBase->priv;
-    priv->initialZoomScale = priv->pageProxy->pageScaleFactor();
-
-    double x, y;
-    gtk_gesture_get_bounding_box_center(gesture, &x, &y);
-    priv->pageProxy->getCenterForZoomGesture(IntPoint(x, y), priv->initialZoomPoint);
-}
-
 static void webkitWebViewBaseZoomChanged(WebKitWebViewBase* webViewBase, gdouble scale, GtkGesture* gesture)
 {
     WebKitWebViewBasePrivate* priv = webViewBase->priv;
@@ -1867,16 +1855,30 @@ static void webkitWebViewBaseZoomChanged(WebKitWebViewBase* webViewBase, gdouble
 
     gtk_gesture_set_state(gesture, GTK_EVENT_SEQUENCE_CLAIMED);
 
-    auto pageScale = clampTo<double>(priv->initialZoomScale * scale, 1, 3);
-
-    FloatPoint scaledZoomCenter(priv->initialZoomPoint);
-    scaledZoomCenter.scale(pageScale);
+    ViewGestureController* controller = webkitWebViewBaseViewGestureController(webViewBase);
+    if (!controller)
+        return;
 
     double x, y;
     gtk_gesture_get_bounding_box_center(gesture, &x, &y);
-    FloatPoint viewPoint = FloatPoint(x, y);
+    FloatPoint origin = FloatPoint(x, y);
 
-    priv->pageProxy->scalePage(pageScale, WebCore::roundedIntPoint(FloatPoint(scaledZoomCenter - viewPoint)));
+    controller->setMagnification(scale, origin);
+}
+
+static void webkitWebViewBaseZoomEnd(WebKitWebViewBase* webViewBase, GdkEventSequence* sequence, GtkGesture* gesture)
+{
+    WebKitWebViewBasePrivate* priv = webViewBase->priv;
+    if (priv->pageGrabbedTouch)
+        return;
+
+    gtk_gesture_set_state(gesture, GTK_EVENT_SEQUENCE_CLAIMED);
+
+    ViewGestureController* controller = webkitWebViewBaseViewGestureController(webViewBase);
+    if (!controller)
+        return;
+
+    controller->endMagnification();
 }
 
 static void webkitWebViewBaseTouchLongPress(WebKitWebViewBase* webViewBase, gdouble x, gdouble y, GtkGesture*)
@@ -2059,8 +2061,8 @@ static void webkitWebViewBaseConstructed(GObject* object)
     priv->touchGestureGroup = gtk_gesture_zoom_new(viewWidget);
     g_object_set_data_full(G_OBJECT(viewWidget), "wk-view-zoom-gesture", priv->touchGestureGroup, g_object_unref);
 #endif
-    g_signal_connect_object(priv->touchGestureGroup, "begin", G_CALLBACK(webkitWebViewBaseZoomBegin), viewWidget, G_CONNECT_SWAPPED);
     g_signal_connect_object(priv->touchGestureGroup, "scale-changed", G_CALLBACK(webkitWebViewBaseZoomChanged), viewWidget, G_CONNECT_SWAPPED);
+    g_signal_connect_object(priv->touchGestureGroup, "end", G_CALLBACK(webkitWebViewBaseZoomEnd), viewWidget, G_CONNECT_SWAPPED);
 
 #if USE(GTK4)
     gesture = gtk_gesture_long_press_new();
@@ -2528,6 +2530,7 @@ RefPtr<WebKit::ViewSnapshot> webkitWebViewBaseTakeViewSnapshot(WebKitWebViewBase
     float deviceScale = page->deviceScaleFactor();
     size.scale(deviceScale);
 
+#if !USE(GTK4)
     RefPtr<cairo_surface_t> surface = adoptRef(cairo_image_surface_create(CAIRO_FORMAT_RGB24, size.width(), size.height()));
     cairo_surface_set_device_scale(surface.get(), deviceScale, deviceScale);
 
@@ -2537,11 +2540,39 @@ RefPtr<WebKit::ViewSnapshot> webkitWebViewBaseTakeViewSnapshot(WebKitWebViewBase
         cairo_rectangle(cr.get(), clipRect->x(), clipRect->y(), clipRect->width(), clipRect->height());
         cairo_clip(cr.get());
     }
-#if !USE(GTK4)
     webkitWebViewBaseDraw(GTK_WIDGET(webkitWebViewBase), cr.get());
-#endif
 
     return ViewSnapshot::create(WTFMove(surface));
+#else
+    WebKitWebViewBasePrivate* priv = webkitWebViewBase->priv;
+    auto* renderer = gtk_native_get_renderer(GTK_NATIVE(priv->toplevelOnScreenWindow));
+
+    GRefPtr<GtkSnapshot> snapshot = adoptGRef(gtk_snapshot_new());
+
+    if (clipRect) {
+        graphene_point_t point = { -static_cast<float>(clipRect->x()), -static_cast<float>(clipRect->y()) };
+        graphene_rect_t rect = {
+            { static_cast<float>(clipRect->x()), static_cast<float>(clipRect->y()) },
+            { static_cast<float>(clipRect->width()), static_cast<float>(clipRect->height()) }
+        };
+
+        gtk_snapshot_translate(snapshot.get(), &point);
+        gtk_snapshot_push_clip(snapshot.get(), &rect);
+    }
+
+    gtk_snapshot_scale(snapshot.get(), deviceScale, deviceScale);
+    webkitWebViewBaseSnapshot(GTK_WIDGET(webkitWebViewBase), snapshot.get());
+
+    if (clipRect)
+        gtk_snapshot_pop(snapshot.get());
+
+    GRefPtr<GskRenderNode> renderNode = adoptGRef(gtk_snapshot_to_node(snapshot.get()));
+
+    graphene_rect_t viewport = { 0, 0, static_cast<float>(size.width()), static_cast<float>(size.height()) };
+    GdkTexture* texture = gsk_renderer_render_texture(renderer, renderNode.get(), &viewport);
+
+    return ViewSnapshot::create(WTFMove(texture));
+#endif
 }
 
 void webkitWebViewBaseDidStartProvisionalLoadForMainFrame(WebKitWebViewBase* webkitWebViewBase)

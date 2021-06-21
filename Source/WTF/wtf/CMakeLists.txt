@@ -162,7 +162,6 @@ set(WTF_PUBLIC_HEADERS
     Observer.h
     OptionSet.h
     OptionSetHash.h
-    Optional.h
     OrderMaker.h
     Packed.h
     PackedRef.h
@@ -240,6 +239,7 @@ set(WTF_PUBLIC_HEADERS
     SmallSet.h
     SoftLinking.h
     SortedArrayMap.h
+    Span.h
     SpanningTree.h
     Spectrum.h
     StackBounds.h
@@ -303,6 +303,7 @@ set(WTF_PUBLIC_HEADERS
     WTFConfig.h
     WTFSemaphore.h
     WallTime.h
+    WeakHashMap.h
     WeakHashSet.h
     WeakPtr.h
     WeakRandom.h

@@ -282,6 +282,7 @@ CurlHandle::CurlHandle()
 {
     m_handle = curl_easy_init();
     curl_easy_setopt(m_handle, CURLOPT_ERRORBUFFER, m_errorBuffer);
+    curl_easy_setopt(m_handle, CURLOPT_NOSIGNAL, 1L);
 
     enableShareHandle();
     enableAllowedProtocols();
@@ -793,6 +794,7 @@ std::optional<NetworkLoadMetrics> CurlHandle::getNetworkLoadMetrics(MonotonicTim
 
     NetworkLoadMetrics networkLoadMetrics;
 
+    networkLoadMetrics.fetchStart = startTime;
     networkLoadMetrics.domainLookupStart = startTime;
     networkLoadMetrics.domainLookupEnd = startTime + Seconds(nameLookup);
     networkLoadMetrics.connectStart = networkLoadMetrics.domainLookupEnd;

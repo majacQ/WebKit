@@ -136,8 +136,6 @@ public:
     explicit WebProcessPool(API::ProcessPoolConfiguration&);        
     virtual ~WebProcessPool();
 
-    void notifyThisWebProcessPoolWasCreated();
-
     API::ProcessPoolConfiguration& configuration() { return m_configuration.get(); }
 
     static const Vector<WebProcessPool*>& allProcessPools();
@@ -299,8 +297,7 @@ public:
     };
     static Statistics& statistics();    
 
-    void clearCachedCredentials(const PAL::SessionID&);
-    void terminateNetworkProcess();
+    void clearCachedCredentials(PAL::SessionID);
     void terminateAllWebContentProcesses();
     void sendNetworkProcessPrepareToSuspendForTesting(CompletionHandler<void()>&&);
     void sendNetworkProcessWillSuspendImminentlyForTesting();
@@ -442,9 +439,6 @@ public:
     void clearPermanentCredentialsForProtectionSpace(WebCore::ProtectionSpace&&);
 #endif
 
-    static uint64_t registerProcessPoolCreationListener(Function<void(WebProcessPool&)>&&);
-    static void unregisterProcessPoolCreationListener(uint64_t identifier);
-
     ForegroundWebProcessToken foregroundWebProcessToken() const { return ForegroundWebProcessToken(m_foregroundWebProcessCounter.count()); }
     BackgroundWebProcessToken backgroundWebProcessToken() const { return BackgroundWebProcessToken(m_backgroundWebProcessCounter.count()); }
     bool hasForegroundWebProcesses() const { return m_foregroundWebProcessCounter.value(); }
@@ -575,6 +569,10 @@ private:
 #if ENABLE(REMOTE_INSPECTOR)
     static void remoteWebInspectorEnabledCallback(CFNotificationCenterRef, void *observer, CFStringRef name, const void *, CFDictionaryRef userInfo);
 #endif
+#endif
+
+#if PLATFORM(COCOA)
+    static void accessibilityPreferencesChangedCallback(CFNotificationCenterRef, void *observer, CFStringRef name, const void *, CFDictionaryRef userInfo);
 #endif
 
 #if PLATFORM(MAC)
